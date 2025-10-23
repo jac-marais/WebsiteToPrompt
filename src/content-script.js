@@ -133,7 +133,7 @@
     styleButton(copyBtn);
     copyBtn.addEventListener('click', () => {
       navigator.clipboard
-        .writeText(container.textContent)
+        .writeText(markdown)
         .then(() => {
           const originalText = copyBtn.textContent;
           copyBtn.textContent = 'Copied!';
