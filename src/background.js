@@ -1,5 +1,3 @@
-import { trackEvent } from './analytics.js';
-
 console.log('WebsiteToPrompt background script running...');
 
 // Track whether Selection Mode is enabled
@@ -24,7 +22,6 @@ chrome.runtime.onInstalled.addListener(() => {
 
 /**
  * Toggle Selection Mode and notify content scripts + popup.
- * Also track the event.
  */
 function toggleSelectionMode(tabId, newState) {
   inspectModeEnabled = newState;
@@ -51,9 +48,6 @@ function toggleSelectionMode(tabId, newState) {
     type: 'INSPECT_MODE_STATUS',
     enabled: inspectModeEnabled,
   });
-
-  // GA4: Track toggling event
-  trackEvent('toggle_selection_mode', { newState: newState });
 }
 
 // Listen for context menu clicks
@@ -63,8 +57,6 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   } else if (info.menuItemId === 'openDashboard') {
     // Open the new dashboard page in a new tab
     chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') });
-    // GA4: track context menu open
-    trackEvent('open_dashboard', { source: 'context_menu' });
   }
 });
 
@@ -79,8 +71,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   } else if (request.type === 'openDashboard') {
     // Open the new dashboard page in a new tab
     chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') });
-    // GA4: track if user opened from popup
-    trackEvent('open_dashboard', { source: 'popup' });
     sendResponse({ status: 'openedDashboard' });
   } else {
     // Currently unused/no-op

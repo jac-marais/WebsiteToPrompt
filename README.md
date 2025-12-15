@@ -34,7 +34,6 @@ A free, open-source Chrome extension that helps you convert webpage content into
 5. **Privacy & Security**:
    - Open-source code available on GitHub
    - Local storage only - your data stays on your device
-   - Minimal analytics tracking for basic usage patterns
    - No personal information collected or sold
 
 ## Installation
@@ -59,4 +58,3 @@ A free, open-source Chrome extension that helps you convert webpage content into
 
 - Built on [Turndown](https://github.com/domchristie/turndown) for HTML-to-Markdown conversion
 - Uses Chrome's local storage API for data persistence
-- Implements Google Analytics for anonymous usage metrics
