@@ -4,6 +4,17 @@
 
   let selectionMode = false;
   let highlightOverlay = null;
+  let elementStack = [];
+  let currentDepthIndex = 0;
+  let lastMouseX = 0;
+  let lastMouseY = 0;
+  let breadcrumbBar = null;
+  let stackLocked = false;
+  let lockOriginX = 0;
+  let lockOriginY = 0;
+  let accumulatedDelta = 0;
+
+  const SKIP_TAGS = new Set(['HTML', 'HEAD', 'SCRIPT', 'STYLE', 'LINK', 'META', 'NOSCRIPT', 'BR']);
 
   const turndownService = new TurndownService({
     headingStyle: 'atx',
@@ -114,53 +125,168 @@
     }
   });
 
-  // Selection Mode helpers
-  function enableSelectionMode() {
-    console.log('Enabling selection mode...');
-    document.addEventListener('mouseover', handleMouseOver, true);
-    document.addEventListener('mouseout', handleMouseOut, true);
-    document.addEventListener('click', handleClick, true);
-    createOverlayElement();
+  // --- Element stack helpers ---
+
+  function filterElementStack(rawElements) {
+    return rawElements.filter(function (el) {
+      if (el.getAttribute && el.getAttribute('data-wtp-internal') === 'true') return false;
+      if (el.id && el.id.startsWith('websiteToPrompt_')) return false;
+      if (el.classList && el.classList.contains('website-to-prompt-container')) return false;
+      if (SKIP_TAGS.has(el.tagName)) return false;
+      var rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return false;
+      return true;
+    });
   }
 
-  function disableSelectionMode() {
-    console.log('Disabling selection mode...');
-    document.removeEventListener('mouseover', handleMouseOver, true);
-    document.removeEventListener('mouseout', handleMouseOut, true);
-    document.removeEventListener('click', handleClick, true);
-    removeOverlayElement();
+  function rebuildElementStack(x, y) {
+    var raw = document.elementsFromPoint(x, y);
+    elementStack = filterElementStack(raw);
   }
 
-  function handleMouseOver(e) {
-    if (!highlightOverlay) return;
-    const target = e.target;
-    const rect = target.getBoundingClientRect();
+  function getShortDescriptor(el) {
+    var desc = el.tagName.toLowerCase();
+    if (el.id) {
+      desc += '#' + el.id;
+    } else if (el.classList && el.classList.length > 0) {
+      desc += '.' + Array.from(el.classList).slice(0, 2).join('.');
+    }
+    return desc;
+  }
+
+  function updateHighlight() {
+    if (elementStack.length === 0 || !elementStack[currentDepthIndex]) {
+      if (highlightOverlay) highlightOverlay.style.display = 'none';
+      if (breadcrumbBar) breadcrumbBar.style.display = 'none';
+      return;
+    }
+    var el = elementStack[currentDepthIndex];
+    var rect = el.getBoundingClientRect();
 
     highlightOverlay.style.display = 'block';
     highlightOverlay.style.width = rect.width + 'px';
     highlightOverlay.style.height = rect.height + 'px';
-    highlightOverlay.style.top = rect.top + window.scrollY + 'px';
-    highlightOverlay.style.left = rect.left + window.scrollX + 'px';
+    highlightOverlay.style.top = (rect.top + window.scrollY) + 'px';
+    highlightOverlay.style.left = (rect.left + window.scrollX) + 'px';
+
+    updateBreadcrumb();
   }
 
-  function handleMouseOut() {
-    if (!highlightOverlay) return;
-    highlightOverlay.style.display = 'none';
+  function updateBreadcrumb() {
+    if (!breadcrumbBar) return;
+    var el = elementStack[currentDepthIndex];
+    if (!el) return;
+
+    var descriptor = getShortDescriptor(el);
+    var ancestors = [];
+    var current = el.parentElement;
+    var depth = 0;
+    while (current && current !== document.documentElement && depth < 4) {
+      ancestors.unshift(getShortDescriptor(current));
+      current = current.parentElement;
+      depth++;
+    }
+
+    var path = ancestors
+      .map(function (a) { return '<span style="color:#aaa">' + a + '</span>'; })
+      .concat(['<span style="color:#87CEEB;font-weight:bold">' + descriptor + '</span>'])
+      .join(' <span style="color:#555"> &rsaquo; </span> ');
+
+    var counter = '<span style="color:#ffd700;margin-right:12px">[' +
+      (currentDepthIndex + 1) + '/' + elementStack.length + ']</span>';
+
+    var hint = currentDepthIndex === 0
+      ? '<span style="color:#666;margin-left:12px;font-size:11px">scroll to cycle layers</span>'
+      : '';
+
+    breadcrumbBar.innerHTML = counter + path + hint;
+    breadcrumbBar.style.display = 'block';
+  }
+
+  // --- Selection Mode helpers ---
+
+  function enableSelectionMode() {
+    console.log('Enabling selection mode...');
+    document.addEventListener('mousemove', handleMouseMove, true);
+    document.addEventListener('wheel', handleWheel, { capture: true, passive: false });
+    document.addEventListener('click', handleClick, true);
+    document.addEventListener('keydown', handleKeyDown, true);
+    createOverlayElement();
+    createBreadcrumbBar();
+  }
+
+  function disableSelectionMode() {
+    console.log('Disabling selection mode...');
+    document.removeEventListener('mousemove', handleMouseMove, true);
+    document.removeEventListener('wheel', handleWheel, true);
+    document.removeEventListener('click', handleClick, true);
+    document.removeEventListener('keydown', handleKeyDown, true);
+    removeOverlayElement();
+    removeBreadcrumbBar();
+    elementStack = [];
+    currentDepthIndex = 0;
+    stackLocked = false;
+    accumulatedDelta = 0;
+  }
+
+  function handleMouseMove(e) {
+    lastMouseX = e.clientX;
+    lastMouseY = e.clientY;
+
+    if (stackLocked) {
+      var dx = lastMouseX - lockOriginX;
+      var dy = lastMouseY - lockOriginY;
+      if (Math.sqrt(dx * dx + dy * dy) < 5) return;
+      stackLocked = false;
+      accumulatedDelta = 0;
+    }
+
+    rebuildElementStack(lastMouseX, lastMouseY);
+    currentDepthIndex = 0;
+    updateHighlight();
+  }
+
+  function handleWheel(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (elementStack.length === 0) return;
+
+    if (!stackLocked) {
+      stackLocked = true;
+      lockOriginX = lastMouseX;
+      lockOriginY = lastMouseY;
+    }
+
+    accumulatedDelta += e.deltaY;
+
+    if (Math.abs(accumulatedDelta) >= 50) {
+      var steps = Math.sign(accumulatedDelta);
+      currentDepthIndex = Math.max(0, Math.min(elementStack.length - 1, currentDepthIndex + steps));
+      accumulatedDelta = 0;
+      updateHighlight();
+    }
   }
 
   function handleClick(e) {
     if (!selectionMode) return;
 
-    // Prevent normal page interactions
     e.preventDefault();
     e.stopPropagation();
 
-    // Convert + replace the clicked element
-    transformElement(e.target);
+    var selectedElement = elementStack[currentDepthIndex];
+    if (selectedElement && selectedElement.isConnected) {
+      transformElement(selectedElement);
+    }
 
-    // OPTIONAL: If you want to disable auto after one selection, uncomment:
     disableSelectionMode();
     selectionMode = false;
+  }
+
+  function handleKeyDown(e) {
+    if (e.key === 'Escape') {
+      disableSelectionMode();
+      selectionMode = false;
+    }
   }
 
   /**
@@ -343,12 +469,14 @@
   function createOverlayElement() {
     highlightOverlay = document.createElement('div');
     highlightOverlay.id = 'websiteToPrompt_highlightOverlay';
+    highlightOverlay.setAttribute('data-wtp-internal', 'true');
     highlightOverlay.style.position = 'absolute';
     highlightOverlay.style.zIndex = '999999';
     highlightOverlay.style.backgroundColor = 'rgba(135,206,235, 0.3)';
     highlightOverlay.style.pointerEvents = 'none';
     highlightOverlay.style.border = '2px solid #00f';
     highlightOverlay.style.display = 'none';
+    highlightOverlay.style.transition = 'top 0.1s ease-out, left 0.1s ease-out, width 0.1s ease-out, height 0.1s ease-out';
     document.body.appendChild(highlightOverlay);
   }
 
@@ -356,6 +484,38 @@
     if (highlightOverlay) {
       highlightOverlay.remove();
       highlightOverlay = null;
+    }
+  }
+
+  function createBreadcrumbBar() {
+    breadcrumbBar = document.createElement('div');
+    breadcrumbBar.id = 'websiteToPrompt_breadcrumbBar';
+    breadcrumbBar.setAttribute('data-wtp-internal', 'true');
+    breadcrumbBar.style.cssText = [
+      'position: fixed',
+      'bottom: 0',
+      'left: 0',
+      'right: 0',
+      'z-index: 1000000',
+      'background: rgba(0, 0, 0, 0.85)',
+      'color: #fff',
+      "font-family: 'SF Mono', Monaco, Menlo, monospace",
+      'font-size: 13px',
+      'padding: 8px 16px',
+      'pointer-events: none',
+      'display: none',
+      'border-top: 1px solid rgba(255, 255, 255, 0.1)',
+      'white-space: nowrap',
+      'overflow: hidden',
+      'text-overflow: ellipsis',
+    ].join('; ');
+    document.body.appendChild(breadcrumbBar);
+  }
+
+  function removeBreadcrumbBar() {
+    if (breadcrumbBar) {
+      breadcrumbBar.remove();
+      breadcrumbBar = null;
     }
   }
 
