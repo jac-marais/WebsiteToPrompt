@@ -16,6 +16,77 @@
     preformattedCode: true,
   });
 
+  // --- Table conversion rules ---
+
+  function isComplexTable(tableEl) {
+    var cells = tableEl.querySelectorAll('td, th');
+    for (var i = 0; i < cells.length; i++) {
+      if (parseInt(cells[i].getAttribute('colspan') || 1, 10) > 1 ||
+          parseInt(cells[i].getAttribute('rowspan') || 1, 10) > 1) {
+        return true;
+      }
+    }
+    return tableEl.querySelectorAll('table').length > 0;
+  }
+
+  function getCellContent(cellEl) {
+    var content = turndownService.turndown(cellEl.innerHTML);
+    content = content.replace(/\n/g, ' ').trim();
+    content = content.replace(/\|/g, '\\|');
+    return content || ' ';
+  }
+
+  // Suppress child elements — the table rule walks the DOM directly
+  turndownService.addRule('tableSection', {
+    filter: ['thead', 'tbody', 'tfoot'],
+    replacement: function () { return ''; }
+  });
+  turndownService.addRule('tableRow', {
+    filter: 'tr',
+    replacement: function () { return ''; }
+  });
+  turndownService.addRule('tableCell', {
+    filter: ['td', 'th'],
+    replacement: function () { return ''; }
+  });
+
+  turndownService.addRule('table', {
+    filter: 'table',
+    replacement: function (content, node) {
+      var tableEl = node.element || node;
+
+      if (isComplexTable(tableEl)) {
+        return '\n\n' + tableEl.outerHTML + '\n\n';
+      }
+
+      var rows = Array.from(tableEl.querySelectorAll('tr'));
+      if (rows.length === 0) return '';
+
+      var colCount = 0;
+      rows.forEach(function (row) {
+        colCount = Math.max(colCount, row.children.length);
+      });
+      if (colCount === 0) return '';
+
+      var rowData = rows.map(function (row) {
+        var cells = Array.from(row.children);
+        var cellTexts = cells.map(function (cell) {
+          return getCellContent(cell);
+        });
+        while (cellTexts.length < colCount) cellTexts.push(' ');
+        return cellTexts;
+      });
+
+      var header = '| ' + rowData[0].join(' | ') + ' |';
+      var separator = '| ' + rowData[0].map(function () { return '---'; }).join(' | ') + ' |';
+      var bodyRows = rowData.slice(1).map(function (row) {
+        return '| ' + row.join(' | ') + ' |';
+      });
+
+      return '\n\n' + header + '\n' + separator + '\n' + bodyRows.join('\n') + '\n\n';
+    }
+  });
+
   function htmlToMarkdown(html) {
     // remove script tags
     html = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
