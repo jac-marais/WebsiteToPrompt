@@ -69,8 +69,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // Popup asking for the current Selection Mode status
     sendResponse({ enabled: inspectModeEnabled });
   } else if (request.type === 'openDashboard') {
-    // Open the new dashboard page in a new tab
-    chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') });
+    let dashboardUrl = chrome.runtime.getURL('dashboard.html');
+    if (request.promptId) {
+      dashboardUrl += `?promptId=${encodeURIComponent(request.promptId)}`;
+    }
+    chrome.tabs.create({ url: dashboardUrl });
     sendResponse({ status: 'openedDashboard' });
   } else {
     // Currently unused/no-op

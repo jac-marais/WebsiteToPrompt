@@ -304,8 +304,11 @@
     // Save originalHTML in localStorage for revert functionality
     localStorage.setItem(uniqueId, originalHTML);
 
+    const promptId = Date.now() + '_' + Math.random().toString(36).slice(2);
+
     // NEW: auto-save prompt data to chrome.storage.local
     autoSavePrompt({
+      id: promptId,
       url: window.location.href,
       elementPath: selectorPath,
       elementHtml: originalHTML,
@@ -369,7 +372,7 @@
     dashboardBtn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      chrome.runtime.sendMessage({ type: 'openDashboard' });
+      chrome.runtime.sendMessage({ type: 'openDashboard', promptId: promptId });
     });
 
     controls.appendChild(copyBtn);
@@ -385,9 +388,9 @@
    * Auto-save the selected element data to chrome.storage.local,
    * using an enhanced data model. After saving, notify the Dashboard.
    */
-  function autoSavePrompt({ url, elementPath, elementHtml, generatedPrompt }) {
+  function autoSavePrompt({ id, url, elementPath, elementHtml, generatedPrompt }) {
     const record = {
-      id: Date.now() + '_' + Math.random().toString(36).slice(2),
+      id,
       timestamp: Date.now(),
       sourceUrl: url,
       elementPath,

@@ -20,6 +20,8 @@ class DashboardManager {
       panelResizer: document.getElementById('panelResizer'),
     };
 
+    this.pendingPromptId = new URLSearchParams(window.location.search).get('promptId');
+
     // Bind event handlers
     this.bindEvents();
 
@@ -90,6 +92,12 @@ class DashboardManager {
       } else {
         this.state.prompts = res.wtpPrompts || [];
       }
+
+      if (this.pendingPromptId && this.selectPromptById(this.pendingPromptId)) {
+        this.pendingPromptId = null;
+        return;
+      }
+
       this.renderDashboard();
     });
   }
@@ -112,34 +120,41 @@ class DashboardManager {
   groupPrompts() {
     const grouped = {};
 
-    if (this.state.viewMode === 'url') {
-      this.state.prompts.forEach((prompt) => {
-        try {
-          const url = new URL(prompt.sourceUrl).hostname;
-          if (!grouped[url]) grouped[url] = [];
-          grouped[url].push(prompt);
-        } catch (error) {
-          // If URL parsing fails, group under "unknown"
-          const fallback = 'unknown';
-          if (!grouped[fallback]) grouped[fallback] = [];
-          grouped[fallback].push(prompt);
-        }
-      });
-    } else if (this.state.viewMode === 'date') {
-      this.state.prompts.forEach((prompt) => {
-        const date = new Date(prompt.timestamp).toLocaleDateString();
-        if (!grouped[date]) grouped[date] = [];
-        grouped[date].push(prompt);
-      });
-    } else if (this.state.viewMode === 'all') {
+    if (this.state.viewMode === 'all') {
       // Sort all prompts by timestamp
       const sortedPrompts = [...this.state.prompts].sort((a, b) => b.timestamp - a.timestamp);
       grouped['all'] = sortedPrompts;
+    } else if (this.state.viewMode === 'url' || this.state.viewMode === 'date') {
+      this.state.prompts.forEach((prompt) => {
+        const groupKey = this.getGroupKeyForPrompt(prompt);
+        if (!grouped[groupKey]) grouped[groupKey] = [];
+        grouped[groupKey].push(prompt);
+      });
     } else {
       return {};
     }
 
     return grouped;
+  }
+
+  getGroupKeyForPrompt(prompt) {
+    if (this.state.viewMode === 'url') {
+      try {
+        return new URL(prompt.sourceUrl).hostname;
+      } catch (error) {
+        return 'unknown';
+      }
+    }
+
+    if (this.state.viewMode === 'date') {
+      return new Date(prompt.timestamp).toLocaleDateString();
+    }
+
+    if (this.state.viewMode === 'all') {
+      return 'all';
+    }
+
+    return null;
   }
 
   // Search
@@ -423,6 +438,24 @@ class DashboardManager {
     } catch (error) {
       console.error('Delete error:', error);
     }
+  }
+
+  selectPromptById(promptId) {
+    const prompt = this.state.prompts.find((item) => item.id === promptId);
+    if (!prompt) return false;
+
+    const groupKey = this.getGroupKeyForPrompt(prompt);
+    if (!groupKey) return false;
+
+    this.state.selectedGroup = groupKey;
+    this.state.selectedPrompts.clear();
+    this.state.selectedPrompts.add(promptId);
+
+    this.renderDashboard();
+    this.showDetails(promptId);
+    this.updateSelectionControls();
+
+    return true;
   }
 
   initializeResizer() {
