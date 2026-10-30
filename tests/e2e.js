@@ -299,6 +299,11 @@ const storedPrompts = (sw) => sw.evaluate(async () => (await chrome.storage.loca
   await convertTab.waitForFunction(() => document.getElementById('swapImage').currentSrc.endsWith('/second.png'));
   await capture(convertTab, sw, '#swapImage');
   assert.strictEqual((await storedPrompts(sw)).at(-1).generatedPrompt, '![Swap](http://test.local/second.png)', 'refreshed image source');
+  await convertTab.locator('.website-to-prompt-container', { hasText: 'second.png' }).getByRole('button', { name: 'Restore' }).click();
+  await convertTab.evaluate(() => { document.getElementById('swapImage').removeAttribute('src'); });
+  await convertTab.waitForFunction(() => document.getElementById('swapImage').currentSrc === '');
+  await capture(convertTab, sw, '#swapBox');
+  assert.strictEqual((await storedPrompts(sw)).at(-1).generatedPrompt, 'Swap', 'image without a source keeps only its alt text');
 
   // 16. A failed save says so and keeps the Open button off, because the prompt does not exist.
   await sw.evaluate(() => {
