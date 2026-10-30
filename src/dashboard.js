@@ -227,6 +227,8 @@ class DashboardManager {
   }
 
   renderGroupsList(grouped) {
+    // Rerendering replaces the buttons, so keep keyboard focus on the group the user was on.
+    const focusedGroup = document.activeElement?.closest?.('.group-item')?.dataset.group;
     this.elements.groupsPanel.replaceChildren(
       ...[...grouped].map(([groupKey, prompts]) => {
         const element = document.createElement('button');
@@ -244,6 +246,9 @@ class DashboardManager {
         return element;
       })
     );
+    if (focusedGroup !== undefined) {
+      [...this.elements.groupsPanel.children].find((button) => button.dataset.group === focusedGroup)?.focus();
+    }
   }
 
   // Rows and details show the first Markdown line as a title, because a list of timestamps tells nothing apart.

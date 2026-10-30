@@ -31,6 +31,9 @@
       margin: 0 !important;
       pointer-events: none !important;
     }
+    :host([popover])::backdrop {
+      background: transparent !important;
+    }
     * {
       box-sizing: border-box;
     }
@@ -198,17 +201,20 @@
     strongDelimiter: '**',
     linkStyle: 'inlined',
     linkReferenceStyle: 'full',
-    preformattedCode: true,
-    // Capture hosts serialize empty, and Turndown sends empty nodes here before any rule.
-    blankReplacement: function (content, node) {
-      var captures = node.matches('[data-wtp-markdown]') ? [node] : node.querySelectorAll('[data-wtp-markdown]');
-      var markdown = Array.from(captures, function (capture) { return capture.getAttribute('data-wtp-markdown'); }).join('\n\n');
-      if (markdown) return '\n\n' + markdown + '\n\n';
-      return node.isBlock ? '\n\n' : '';
-    },
+    preformattedCode: true
   });
 
   turndownService.remove(['script', 'style', 'noscript', 'template']);
+
+  // An earlier capture inside a wider one contributes its saved Markdown as is.
+  turndownService.addRule('savedCapture', {
+    filter: function (node) {
+      return node.nodeName === 'DIV' && node.hasAttribute('data-wtp-markdown');
+    },
+    replacement: function (content, node) {
+      return '\n\n' + node.getAttribute('data-wtp-markdown') + '\n\n';
+    }
+  });
 
   // Turndown pads markers to four columns ("-   item"); use one space and indent continuation lines to match.
   turndownService.addRule('listItem', {
@@ -217,13 +223,15 @@
       var prefix = options.bulletListMarker + ' ';
       var parent = node.parentNode;
       if (parent.nodeName === 'OL') {
-        var start = Number(parent.getAttribute('start')) || 1;
-        prefix = start + Array.prototype.indexOf.call(parent.children, node) + '. ';
+        prefix = parent.start + Array.prototype.indexOf.call(parent.children, node) + '. ';
       }
+      var indent = ' '.repeat(prefix.length);
       content = content
         .replace(/^\n+/, '')
         .replace(/\n+$/, '\n')
-        .replace(/\n/gm, '\n' + ' '.repeat(prefix.length));
+        .split('\n')
+        .map(function (line, index) { return index > 0 && line ? indent + line : line; })
+        .join('\n');
       return prefix + content + (node.nextSibling && !/\n$/.test(content) ? '\n' : '');
     }
   });
@@ -248,21 +256,27 @@
     return content || ' ';
   }
 
-  // Complex tables stay as HTML, so they need the same cleanup the Markdown rules give everything else.
+  // Complex tables stay as HTML, so keep only the attributes a table needs and clean every URL.
+  var TABLE_ATTRIBUTES = { TD: ['colspan', 'rowspan'], TH: ['colspan', 'rowspan'], A: ['href', 'title'], IMG: ['src', 'alt'] };
+
   function sanitizeTableHtml(tableEl) {
     var clean = tableEl.cloneNode(true);
-    clean.querySelectorAll('script, style, noscript, template').forEach(function (node) { node.remove(); });
-    clean.querySelectorAll('[data-wtp-markdown]').forEach(function (host) {
-      host.replaceWith(host.getAttribute('data-wtp-markdown'));
+    clean.querySelectorAll('script, style, noscript, template, source').forEach(function (node) { node.remove(); });
+    clean.querySelectorAll('[data-wtp-markdown]').forEach(function (capture) {
+      capture.replaceWith(capture.getAttribute('data-wtp-markdown'));
     });
-    clean.querySelectorAll('a[href], img[src]').forEach(function (node) {
-      var attribute = node.nodeName === 'A' ? 'href' : 'src';
-      var url = parseUrl(node.getAttribute(attribute));
-      var blocked = !url || url.protocol === 'javascript:' || (attribute === 'src' && url.protocol === 'data:');
-      if (blocked) {
-        node.removeAttribute(attribute);
+    [clean].concat(Array.from(clean.querySelectorAll('*'))).forEach(function (node) {
+      var allowed = TABLE_ATTRIBUTES[node.nodeName] || [];
+      Array.from(node.attributes).forEach(function (attribute) {
+        if (allowed.indexOf(attribute.name) === -1) node.removeAttribute(attribute.name);
+      });
+      var urlAttribute = node.nodeName === 'A' ? 'href' : node.nodeName === 'IMG' ? 'src' : null;
+      if (!urlAttribute || !node.hasAttribute(urlAttribute)) return;
+      var url = parseUrl(node.getAttribute(urlAttribute));
+      if (!url || url.protocol === 'javascript:' || url.protocol === 'data:') {
+        node.removeAttribute(urlAttribute);
       } else {
-        node.setAttribute(attribute, url.href);
+        node.setAttribute(urlAttribute, url.href);
       }
     });
     return clean.outerHTML;
@@ -371,7 +385,10 @@
 
   function htmlToMarkdown(element) {
     // srcset images only know their chosen URL on the live node, so copy it onto the clone.
-    const clone = element.cloneNode(true);
+    // An inert document keeps the copy from running custom element code or fetching images again.
+    const clone = document.implementation.createHTMLDocument('').importNode(element, true);
+    // Capture hosts serialize empty, and Turndown would treat them and their ancestors as blank.
+    clone.querySelectorAll('[data-wtp-markdown]').forEach((capture) => { capture.textContent = '\uFFFC'; });
     const liveImages = element.matches('img') ? [element] : element.querySelectorAll('img');
     const clonedImages = clone.matches('img') ? [clone] : clone.querySelectorAll('img');
     liveImages.forEach((image, index) => {
@@ -578,17 +595,24 @@
     }, 1500);
   }
 
-  function writeClipboard(text) {
+  async function writeClipboard(text) {
     if (navigator.clipboard) return navigator.clipboard.writeText(text);
-    // Plain http pages have no Clipboard API, so copy through a one-off copy event instead.
+    // Plain http pages have no Clipboard API, so copy through a one-off copy event the page cannot overwrite.
+    let wroteClipboard = false;
     const onCopy = (event) => {
       event.clipboardData.setData('text/plain', text);
       event.preventDefault();
+      event.stopImmediatePropagation();
+      wroteClipboard = true;
     };
     document.addEventListener('copy', onCopy, true);
-    const copied = document.execCommand('copy');
-    document.removeEventListener('copy', onCopy, true);
-    return copied ? Promise.resolve() : Promise.reject(new Error('The browser blocked the copy.'));
+    try {
+      if (!document.execCommand('copy') || !wroteClipboard) {
+        throw new Error('The browser or page blocked the copy.');
+      }
+    } finally {
+      document.removeEventListener('copy', onCopy, true);
+    }
   }
 
   function createControlButton(label, onClick) {
@@ -676,7 +700,7 @@
       status.classList.add(saved ? 'is-saved' : 'is-failed');
       // The deep link names the prompt only after the background confirms it exists.
       if (saved) savedPromptId = prompt.id;
-      openButton.disabled = false;
+      openButton.disabled = !saved;
     });
   }
 

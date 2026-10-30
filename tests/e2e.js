@@ -15,24 +15,33 @@ const TEST_PAGE = `<!doctype html><html><body style="margin:40px; position:relat
 </body></html>`;
 
 // The hostile page also wraps #inner, so a blank wrapper around an earlier capture is covered too.
-const HOSTILE_CSS = 'button { all: unset !important; background: hotpink !important } div { display: block !important } * { font-family: fantasy !important }';
+const HOSTILE_CSS = 'button { all: unset !important; background: hotpink !important } div { display: block !important } * { font-family: fantasy !important } [popover]::backdrop { background: black !important }';
+// A page copy handler must not overwrite or fake the extension's http copy.
+const HOSTILE_SCRIPT = `<script>document.addEventListener('copy', (e) => { e.clipboardData.setData('text/plain', 'PAGE TEXT'); e.preventDefault(); });</script>`;
 const cardPage = (css, wrapInner) => `<!doctype html><html><head><meta charset="utf-8"><style>${css}</style></head><body>
 <div id="outer" style="width:400px">${wrapInner ? '<div id="innerWrap">' : ''}<div id="inner"><h2 id="innerTitle">Inner title</h2></div>${wrapInner ? '</div>' : ''}<p id="outerTail">Tail</p></div>
 <p id="rtl" dir="rtl" style="width:400px">שלום עולם</p>
 <dialog id="modal"><p id="dialogText">Dialog text</p></dialog>
-</body></html>`;
+${css ? HOSTILE_SCRIPT : ''}</body></html>`;
 const CONVERT_PAGE = `<!doctype html><html><body>
+<script>window.customElementConstructions = 0; customElements.define('x-counter', class extends HTMLElement { constructor() { super(); window.customElementConstructions++; } });</script>
 <div id="convert" style="width:500px;padding:20px">
+<x-counter>Custom</x-counter>
 <p><a href="java&#9;script:alert(1)">tabbed</a> <img src="da&#9;ta:image/png;base64,AAAA" alt="data *alt*"> <img src="/x.png" alt="closing ] bracket"> <img srcset="/selected.png 1x" alt="Chosen"></p>
 <ul><li>One</li><li>Two<ul><li>Nested</li></ul></li></ul>
 <ol start="3"><li>Three</li><li>Four</li></ol>
+<ol start="0"><li>Zero</li></ol>
 <pre><code>first
 
 
 last</code></pre>
-<table><tr><td colspan="2"><a href="/rel">rel</a><script>window.tableScriptRan = true</script><img src="data:image/png;base64,AA"></td></tr></table>
-</div></body></html>`;
+<table><tr><td colspan="2" onclick="window.cellClicked = true"><a href="/rel">rel</a><script>window.tableScriptRan = true</script><img src="data:image/png;base64,AA" srcset="data:image/png;base64,AAAA 1x, /relative.png 2x" onerror="window.liveImageFailed = true"></td></tr></table>
+</div>
+<p id="failTarget" style="width:300px">Fail target</p>
+<section id="nested" style="width:500px;padding:20px"><ul><li><p id="nestedItem">Item</p></li></ul><blockquote><p id="nestedQuote">Quoted</p></blockquote></section></body></html>`;
 const CONVERT_EXPECTED = [
+  'Custom',
+  '',
   'tabbed data \\*alt\\* ![closing \\] bracket](http://test.local/x.png) ![Chosen](http://test.local/selected.png)',
   '',
   '- One',
@@ -41,6 +50,8 @@ const CONVERT_EXPECTED = [
   '',
   '3. Three',
   '4. Four',
+  '',
+  '0. Zero',
   '',
   '```',
   'first',
@@ -54,6 +65,7 @@ const CONVERT_EXPECTED = [
 const PAGES = { '/plain.html': cardPage('', false), '/hostile.html': cardPage(HOSTILE_CSS, true), '/convert.html': CONVERT_PAGE };
 
 async function center(page, selector) {
+  await page.locator(selector).scrollIntoViewIfNeeded();
   const box = await page.locator(selector).boundingBox();
   return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
 }
@@ -166,8 +178,12 @@ const storedPrompts = (sw) => sw.evaluate(async () => (await chrome.storage.loca
   const groupOrder = await dashboard.locator('.group-item').allTextContents();
   assert.deepStrictEqual(groupOrder, ['bulk.example.com (20)', 'test.local (5)'], 'groups newest first: ' + groupOrder);
 
-  // 10. Shift range select, then delete with confirm; the view falls back cleanly.
-  await dashboard.locator('.group-item', { hasText: 'bulk.example.com' }).click();
+  // 10. Keyboard activation of a group keeps focus on that group after the rerender.
+  await dashboard.locator('.group-item', { hasText: 'bulk.example.com' }).focus();
+  await dashboard.keyboard.press('Enter');
+  assert.strictEqual(await dashboard.evaluate(() => document.activeElement.dataset.group), 'bulk.example.com', 'group keeps focus');
+
+  // Shift range select, then delete with confirm; the view falls back cleanly.
   const items = dashboard.locator('.prompt-item');
   assert.strictEqual(await items.first().locator('.prompt-title').textContent(), 'bulk 19', 'newest prompt first');
   // A checkbox adds to the selection instead of replacing it.
@@ -230,6 +246,32 @@ const storedPrompts = (sw) => sw.evaluate(async () => (await chrome.storage.loca
   await convertTab.locator('.wtp-card-status:text("✓ Saved")').waitFor();
   const converted = (await storedPrompts(sw)).at(-1).generatedPrompt;
   assert.strictEqual(converted, CONVERT_EXPECTED, 'conversion edge cases: ' + JSON.stringify(converted));
+  assert.strictEqual(await convertTab.evaluate(() => window.customElementConstructions), 1, 'conversion does not rerun page code');
+
+  // Wider captures keep list and quote markers around earlier captures.
+  await capture(convertTab, sw, '#nestedItem');
+  await capture(convertTab, sw, '#nestedQuote');
+  await convertTab.locator('.wtp-card-status:text("✓ Saved")').nth(2).waitFor();
+  const savedBeforeNested = (await storedPrompts(sw)).length;
+  await sw.evaluate(() => messageHandlers.SET_SELECTION_MODE({ enabled: true }));
+  const nestedBox = await convertTab.locator('#nested').boundingBox();
+  await convertTab.mouse.move(nestedBox.x + 4, nestedBox.y + 4);
+  await convertTab.mouse.click(nestedBox.x + 5, nestedBox.y + 5);
+  // The wider card replaces the section, and the earlier cards go with it.
+  for (let i = 0; i < 50 && (await storedPrompts(sw)).length === savedBeforeNested; i++) await convertTab.waitForTimeout(100);
+  const nestedMarkdown = (await storedPrompts(sw)).at(-1).generatedPrompt;
+  assert.strictEqual(nestedMarkdown, '- Item\n\n> Quoted', 'nested structure: ' + JSON.stringify(nestedMarkdown));
+
+  // 16. A failed save says so and keeps the Open button off, because the prompt does not exist.
+  await sw.evaluate(() => {
+    self.realSavePrompt = messageHandlers.SAVE_PROMPT;
+    messageHandlers.SAVE_PROMPT = async () => { throw new Error('quota'); };
+  });
+  await capture(convertTab, sw, '#failTarget');
+  const failedCard = convertTab.locator('.website-to-prompt-container', { hasText: 'Fail target' });
+  await failedCard.locator('.wtp-card-status:text("Not saved. Copy it now.")').waitFor();
+  assert.ok(await failedCard.getByRole('button', { name: 'Open in Saved prompts' }).isDisabled(), 'open stays disabled after failed save');
+  await sw.evaluate(() => { messageHandlers.SAVE_PROMPT = self.realSavePrompt; });
 
   // 15. A newer injected copy disposes the older one, so stale listeners cannot keep intercepting clicks.
   await sw.evaluate(() => messageHandlers.SET_SELECTION_MODE({ enabled: true }));
@@ -259,6 +301,8 @@ const storedPrompts = (sw) => sw.evaluate(async () => (await chrome.storage.loca
     assert.ok(await cardTab.locator('#websiteToPrompt_breadcrumbBar').isVisible(), 'path bar visible' + where);
     const barFont = await cardTab.locator('#websiteToPrompt_breadcrumbBar').evaluate((el) => getComputedStyle(el).fontFamily);
     assert.ok(!barFont.includes('fantasy'), 'path bar font isolated' + where);
+    const backdrop = await overlay.evaluate((el) => getComputedStyle(el.getRootNode().host, '::backdrop').backgroundColor);
+    assert.strictEqual(backdrop, 'rgba(0, 0, 0, 0)', 'picker backdrop transparent' + where);
     await cardTab.keyboard.press('Escape');
     assert.strictEqual(await overlay.count(), 0, 'Esc removes the picker' + where);
 
@@ -274,9 +318,11 @@ const storedPrompts = (sw) => sw.evaluate(async () => (await chrome.storage.loca
     assert.strictEqual(await copyButton.evaluate((el) => getComputedStyle(el).backgroundColor), 'rgb(255, 214, 10)', 'copy button styled' + where);
     await copyButton.click();
     await innerCard.getByRole('button', { name: 'Copied' }).waitFor();
-    if (pageUrl.startsWith('https:')) {
-      assert.strictEqual(await cardTab.evaluate(() => navigator.clipboard.readText()), '## Inner title', 'clipboard holds markdown' + where);
-    }
+    const clipboardReader = pageUrl.startsWith('https:') ? cardTab : await context.newPage();
+    if (clipboardReader !== cardTab) await clipboardReader.goto('https://test.local/plain.html');
+    assert.strictEqual(await clipboardReader.evaluate(() => navigator.clipboard.readText()), '## Inner title', 'clipboard holds markdown' + where);
+    if (clipboardReader !== cardTab) await clipboardReader.close();
+    await cardTab.bringToFront();
 
     // A wider capture keeps the earlier Markdown unescaped and leaves out the card's buttons.
     await capture(cardTab, sw, '#outerTail', 1);
