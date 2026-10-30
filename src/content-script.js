@@ -206,15 +206,6 @@
 
   turndownService.remove(['script', 'style', 'noscript', 'template']);
 
-  // An earlier capture inside a wider one contributes its saved Markdown as is.
-  turndownService.addRule('savedCapture', {
-    filter: function (node) {
-      return node.nodeName === 'DIV' && node.hasAttribute('data-wtp-markdown');
-    },
-    replacement: function (content, node) {
-      return '\n\n' + node.getAttribute('data-wtp-markdown') + '\n\n';
-    }
-  });
 
   // Turndown pads markers to four columns ("-   item"); use one space and indent continuation lines to match.
   turndownService.addRule('listItem', {
@@ -261,10 +252,7 @@
 
   function sanitizeTableHtml(tableEl) {
     var clean = tableEl.cloneNode(true);
-    clean.querySelectorAll('script, style, noscript, template, source').forEach(function (node) { node.remove(); });
-    clean.querySelectorAll('[data-wtp-markdown]').forEach(function (capture) {
-      capture.replaceWith(capture.getAttribute('data-wtp-markdown'));
-    });
+    clean.querySelectorAll('script, style, noscript, template, source, button, input, select, textarea').forEach(function (node) { node.remove(); });
     [clean].concat(Array.from(clean.querySelectorAll('*'))).forEach(function (node) {
       var allowed = TABLE_ATTRIBUTES[node.nodeName] || [];
       Array.from(node.attributes).forEach(function (attribute) {
@@ -383,20 +371,19 @@
     }
   });
 
-  function htmlToMarkdown(element) {
-    // srcset images only know their chosen URL on the live node, so copy it onto the clone.
-    // An inert document keeps the copy from running custom element code or fetching images again.
-    const clone = document.implementation.createHTMLDocument('').importNode(element, true);
-    // Capture hosts serialize empty, and Turndown would treat them and their ancestors as blank.
-    clone.querySelectorAll('[data-wtp-markdown]').forEach((capture) => { capture.textContent = '\uFFFC'; });
-    const liveImages = element.matches('img') ? [element] : element.querySelectorAll('img');
-    const clonedImages = clone.matches('img') ? [clone] : clone.querySelectorAll('img');
-    liveImages.forEach((image, index) => {
-      if (image.currentSrc) clonedImages[index].setAttribute('src', image.currentSrc);
-    });
-    // The HTML string keeps the element's own tag and parses in an inert document.
-    return turndownService.turndown(clone.outerHTML).trim();
+  /**
+   * Copy the element into an inert document, so the copy runs no page code and fetches nothing.
+   * Earlier captures are swapped back for their original elements, so a wider capture converts the real content.
+   */
+  function snapshotForConversion(node, inertDocument) {
+    const source = originalElementByContainer.get(node) || node;
+    const copy = inertDocument.importNode(source, false);
+    // srcset images only know their chosen URL on the live node.
+    if (source.nodeName === 'IMG' && source.currentSrc) copy.setAttribute('src', source.currentSrc);
+    source.childNodes.forEach((child) => copy.appendChild(snapshotForConversion(child, inertDocument)));
+    return copy;
   }
+
 
   function handleRuntimeMessage(request, sender, sendResponse) {
     if (request.type === 'GET_SELECTION_MODE') {
@@ -640,21 +627,20 @@
    * Convert the clicked element to Markdown, save it as a prompt, and show the Markdown in its place.
    */
   function transformElement(element) {
-    const markdown = htmlToMarkdown(element);
+    const snapshotHtml = snapshotForConversion(element, document.implementation.createHTMLDocument('')).outerHTML;
+    const markdown = turndownService.turndown(snapshotHtml).trim();
     const prompt = {
       id: Date.now() + '_' + Math.random().toString(36).slice(2),
       timestamp: Date.now(),
       sourceUrl: window.location.href,
       elementPath: getElementSelectorPath(element),
-      elementContent: element.outerHTML,
+      elementContent: snapshotHtml,
       generatedPrompt: markdown,
       tags: [],
     };
 
     const container = document.createElement('div');
     container.className = 'website-to-prompt-container';
-    // The shadow root does not serialize, so a wider capture reads this Markdown instead.
-    container.setAttribute('data-wtp-markdown', markdown);
     const shadowRoot = createShadowRoot(container);
 
     const status = createTextElement('span', 'wtp-card-status', 'Saving…');

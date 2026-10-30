@@ -35,8 +35,9 @@ const CONVERT_PAGE = `<!doctype html><html><body>
 
 
 last</code></pre>
-<table><tr><td colspan="2" onclick="window.cellClicked = true"><a href="/rel">rel</a><script>window.tableScriptRan = true</script><img src="data:image/png;base64,AA" srcset="data:image/png;base64,AAAA 1x, /relative.png 2x" onerror="window.liveImageFailed = true"></td></tr></table>
+<table><tr><td colspan="2" onclick="window.cellClicked = true"><a href="/rel">rel</a><button>Buy</button><input value="1"><script>window.tableScriptRan = true</script><img src="data:image/png;base64,AA" srcset="data:image/png;base64,AAAA 1x, /relative.png 2x" onerror="window.liveImageFailed = true"></td></tr></table>
 </div>
+<pre id="codeBlock" style="width:300px;padding:8px"><code>const <span id="token">value</span> = 1;</code></pre>
 <p id="failTarget" style="width:300px">Fail target</p>
 <section id="nested" style="width:500px;padding:20px"><ul><li><p id="nestedItem">Item</p></li></ul><blockquote><p id="nestedQuote">Quoted</p></blockquote></section></body></html>`;
 const CONVERT_EXPECTED = [
@@ -261,6 +262,18 @@ const storedPrompts = (sw) => sw.evaluate(async () => (await chrome.storage.loca
   for (let i = 0; i < 50 && (await storedPrompts(sw)).length === savedBeforeNested; i++) await convertTab.waitForTimeout(100);
   const nestedMarkdown = (await storedPrompts(sw)).at(-1).generatedPrompt;
   assert.strictEqual(nestedMarkdown, '- Item\n\n> Quoted', 'nested structure: ' + JSON.stringify(nestedMarkdown));
+
+  // 17. Recapturing a code block around an earlier capture keeps the code text literal.
+  await capture(convertTab, sw, '#token');
+  const codeBefore = (await storedPrompts(sw)).length;
+  await sw.evaluate(() => messageHandlers.SET_SELECTION_MODE({ enabled: true }));
+  const codeBox = await convertTab.locator('#codeBlock').boundingBox();
+  await convertTab.mouse.move(codeBox.x + 2, codeBox.y + 2);
+  await convertTab.mouse.click(codeBox.x + 2, codeBox.y + 2);
+  for (let i = 0; i < 50 && (await storedPrompts(sw)).length === codeBefore; i++) await convertTab.waitForTimeout(100);
+  const codePrompt = (await storedPrompts(sw)).at(-1);
+  assert.strictEqual(codePrompt.generatedPrompt, '```\nconst value = 1;\n```', 'code recapture: ' + JSON.stringify(codePrompt.generatedPrompt));
+  assert.ok(codePrompt.elementContent.includes('<span id="token">value</span>'), 'elementContent holds the original token');
 
   // 16. A failed save says so and keeps the Open button off, because the prompt does not exist.
   await sw.evaluate(() => {
