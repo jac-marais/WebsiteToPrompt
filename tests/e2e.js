@@ -40,6 +40,7 @@ last</code></pre>
 </div>
 <pre id="codeBlock" style="width:300px;padding:8px"><code>const <span id="token">value</span> = 1;</code></pre>
 <div id="picGrandparent" style="width:300px;padding:8px"><div id="picParent" style="padding:8px"><picture><source srcset="/chosen.png" media="(min-width: 1px)"><img id="pic" src="/fallback.png" alt="Pic" width="40" height="40"></picture></div></div>
+<p id="swapBox" style="width:300px"><img id="swapImage" src="/first.png" alt="Swap" width="40" height="40"></p>
 <p id="failTarget" style="width:300px">Fail target</p>
 <section id="nested" style="width:500px;padding:20px"><ul><li><p id="nestedItem">Item</p></li></ul><blockquote><p id="nestedQuote">Quoted</p></blockquote></section></body></html>`;
 const CONVERT_EXPECTED = [
@@ -289,6 +290,15 @@ const storedPrompts = (sw) => sw.evaluate(async () => (await chrome.storage.loca
     for (let i = 0; i < 50 && (await storedPrompts(sw)).length === before; i++) await convertTab.waitForTimeout(100);
     assert.strictEqual((await storedPrompts(sw)).at(-1).generatedPrompt, '![Pic](http://test.local/chosen.png)', 'chosen image kept for ' + wrapperId);
   }
+
+  // An image restored to the page and given a new source is captured with the new source.
+  await capture(convertTab, sw, '#swapImage');
+  assert.strictEqual((await storedPrompts(sw)).at(-1).generatedPrompt, '![Swap](http://test.local/first.png)', 'first image source');
+  await convertTab.locator('.website-to-prompt-container', { hasText: 'first.png' }).getByRole('button', { name: 'Restore' }).click();
+  await convertTab.evaluate(() => { document.getElementById('swapImage').src = '/second.png'; });
+  await convertTab.waitForFunction(() => document.getElementById('swapImage').currentSrc.endsWith('/second.png'));
+  await capture(convertTab, sw, '#swapImage');
+  assert.strictEqual((await storedPrompts(sw)).at(-1).generatedPrompt, '![Swap](http://test.local/second.png)', 'refreshed image source');
 
   // 16. A failed save says so and keeps the Open button off, because the prompt does not exist.
   await sw.evaluate(() => {

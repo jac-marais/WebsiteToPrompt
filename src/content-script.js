@@ -381,12 +381,10 @@
     const copyNode = (source) => {
       const copy = inertDocument.importNode(source, false);
       if (source.nodeName === 'IMG') {
-        // A detached image forgets which srcset or <picture> source it chose, so remember it from the first capture.
+        // A detached image forgets which srcset or <picture> source it chose, so remember it while it is on the page.
+        if (source.isConnected && source.currentSrc) chosenImageSrc.set(source, source.currentSrc);
         const chosenSrc = chosenImageSrc.get(source) || source.currentSrc;
-        if (chosenSrc) {
-          chosenImageSrc.set(source, chosenSrc);
-          copy.setAttribute('src', chosenSrc);
-        }
+        if (chosenSrc) copy.setAttribute('src', chosenSrc);
       }
       return copy;
     };
