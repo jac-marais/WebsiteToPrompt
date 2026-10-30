@@ -22,6 +22,7 @@ class DashboardManager {
       selectAllBtn: document.querySelector('.select-all-btn'),
       exportBtn: document.querySelector('.export-btn'),
       deleteBtn: document.querySelector('.delete-btn'),
+      status: document.getElementById('dashboardStatus'),
       panelResizer: document.getElementById('panelResizer'),
     };
 
@@ -50,7 +51,9 @@ class DashboardManager {
 
     this.elements.promptsList.addEventListener('click', (e) => {
       const promptItem = e.target.closest('.prompt-item');
-      if (promptItem) this.handlePromptClick(promptItem.dataset.id, e);
+      if (!promptItem) return;
+      const toggle = e.ctrlKey || e.metaKey || e.target.classList.contains('prompt-checkbox');
+      this.handlePromptClick(promptItem.dataset.id, { shiftKey: e.shiftKey, toggle });
     });
 
     this.elements.groupsPanel.addEventListener('click', (e) => {
@@ -67,6 +70,11 @@ class DashboardManager {
     chrome.storage.local.get('wtpPrompts', (res) => {
       if (chrome.runtime.lastError) {
         console.error('Error retrieving wtpPrompts from storage:', chrome.runtime.lastError);
+        // An unread collection is not an empty one, so say it failed instead of showing the empty state.
+        this.renderMessage("Couldn't load saved prompts", 'Your prompts are still stored on this device.', 'Try again', () =>
+          this.loadPrompts()
+        );
+        return;
       }
       this.setPrompts((res && res.wtpPrompts) || []);
     });
@@ -93,7 +101,7 @@ class DashboardManager {
     this.state.selectedPromptIds.clear();
     this.state.detailsPromptId = null;
     this.elements.viewButtons.forEach((btn) => {
-      btn.classList.toggle('active', btn.dataset.view === newMode);
+      btn.setAttribute('aria-pressed', String(btn.dataset.view === newMode));
     });
     this.render();
   }
@@ -142,17 +150,17 @@ class DashboardManager {
     return this.groupPrompts().get(this.state.selectedGroup) || [];
   }
 
-  handlePromptClick(promptId, event) {
+  handlePromptClick(promptId, { shiftKey, toggle }) {
     const selectedIds = this.state.selectedPromptIds;
     const visibleIds = this.getVisiblePrompts().map((prompt) => prompt.id);
     const anchorIndex = visibleIds.indexOf(this.state.lastClickedPromptId);
 
-    if (event.shiftKey && anchorIndex !== -1) {
+    if (shiftKey && anchorIndex !== -1) {
       const clickedIndex = visibleIds.indexOf(promptId);
       visibleIds
         .slice(Math.min(anchorIndex, clickedIndex), Math.max(anchorIndex, clickedIndex) + 1)
         .forEach((id) => selectedIds.add(id));
-    } else if (event.ctrlKey || event.metaKey) {
+    } else if (toggle) {
       if (selectedIds.has(promptId)) {
         selectedIds.delete(promptId);
       } else {
@@ -221,9 +229,11 @@ class DashboardManager {
   renderGroupsList(grouped) {
     this.elements.groupsPanel.replaceChildren(
       ...[...grouped].map(([groupKey, prompts]) => {
-        const element = document.createElement('div');
+        const element = document.createElement('button');
+        element.type = 'button';
         element.className = 'group-item';
         element.classList.toggle('selected', groupKey === this.state.selectedGroup);
+        element.setAttribute('aria-current', String(groupKey === this.state.selectedGroup));
         element.dataset.group = groupKey;
         element.textContent = groupKey + ' ';
 
@@ -236,42 +246,100 @@ class DashboardManager {
     );
   }
 
+  // Rows and details show the first Markdown line as a title, because a list of timestamps tells nothing apart.
+  getPromptLines(prompt) {
+    return (prompt.generatedPrompt || '')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+  }
+
+  getPromptTitle(prompt) {
+    const [firstLine] = this.getPromptLines(prompt);
+    if (!firstLine) return 'Empty capture';
+    return firstLine.replace(/^(#{1,6}|[-*+>]|\d+\.)\s+/, '') || firstLine;
+  }
+
+  createTextElement(tagName, className, text) {
+    const element = document.createElement(tagName);
+    element.className = className;
+    element.textContent = text;
+    return element;
+  }
+
+  renderMessage(heading, body, buttonLabel, onButtonClick) {
+    const message = document.createElement('div');
+    message.className = 'empty-state';
+    message.setAttribute('role', 'status');
+    message.append(this.createTextElement('h2', '', heading), this.createTextElement('p', '', body));
+    if (buttonLabel) {
+      const button = this.createTextElement('button', 'button', buttonLabel);
+      button.type = 'button';
+      button.addEventListener('click', onButtonClick);
+      message.appendChild(button);
+    }
+    this.elements.promptsList.replaceChildren(message);
+  }
+
   renderPromptsList(visiblePrompts) {
     if (visiblePrompts.length === 0) {
-      const emptyState = document.createElement('div');
-      emptyState.className = 'empty-state';
-      emptyState.textContent = this.state.searchQuery
-        ? 'No prompts match your search.'
-        : 'No prompts yet. Open the extension popup, click Enable Selection, then click any part of a page.';
-      this.elements.promptsList.replaceChildren(emptyState);
+      if (this.state.searchQuery) {
+        this.renderMessage('No matching prompts', 'Try a shorter phrase or a website name.', 'Clear search', () => {
+          this.elements.searchInput.value = '';
+          this.handleSearch('');
+        });
+      } else {
+        this.renderMessage(
+          'No saved prompts yet',
+          'Open a webpage, click the WebsiteToPrompt icon in the toolbar, and choose Select content. Click a section to save its Markdown here.'
+        );
+      }
       return;
     }
 
+    // Rerendering replaces the rows, so keep keyboard focus on the checkbox the user was on.
+    const focusedPromptId = document.activeElement?.closest?.('.prompt-item')?.dataset.id;
+
     this.elements.promptsList.replaceChildren(
       ...visiblePrompts.map((prompt) => {
+        const isSelected = this.state.selectedPromptIds.has(prompt.id);
+        const title = this.getPromptTitle(prompt);
         const element = document.createElement('div');
         element.className = 'prompt-item';
-        element.classList.toggle('selected', this.state.selectedPromptIds.has(prompt.id));
+        element.classList.toggle('selected', isSelected);
+        element.classList.toggle('viewing', prompt.id === this.state.detailsPromptId);
         element.dataset.id = prompt.id;
 
-        const meta = document.createElement('div');
-        meta.className = 'prompt-meta';
-        meta.textContent = new Date(prompt.timestamp).toLocaleString();
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'prompt-checkbox';
+        checkbox.checked = isSelected;
+        checkbox.setAttribute('aria-label', `Select ${title}`);
 
-        const content = document.createElement('div');
-        content.className = 'prompt-content';
-        content.textContent = prompt.generatedPrompt;
+        const text = document.createElement('div');
+        text.className = 'prompt-text';
+        text.append(
+          this.createTextElement('div', 'prompt-title', title),
+          this.createTextElement('div', 'prompt-content', this.getPromptLines(prompt).slice(1).join(' ')),
+          this.createTextElement('div', 'prompt-meta', new Date(prompt.timestamp).toLocaleString())
+        );
 
-        element.append(meta, content);
+        element.append(checkbox, text);
         return element;
       })
     );
+
+    if (focusedPromptId) {
+      const row = [...this.elements.promptsList.children].find((item) => item.dataset.id === focusedPromptId);
+      row?.querySelector('.prompt-checkbox').focus();
+    }
   }
 
   renderSelectionControls(visiblePrompts) {
     const count = this.state.selectedPromptIds.size;
     this.elements.selectionControls.classList.toggle('active', visiblePrompts.length > 0);
     this.elements.selectedCount.textContent = `${count} selected`;
+    this.elements.exportBtn.textContent = `Copy as one prompt (${count})`;
     this.elements.exportBtn.disabled = count === 0;
     this.elements.deleteBtn.disabled = count === 0;
   }
@@ -283,41 +351,40 @@ class DashboardManager {
       return;
     }
 
-    const timestampSection = this.createDetailsSection();
-    timestampSection.textContent = new Date(prompt.timestamp).toLocaleString();
+    const title = this.createTextElement('h2', 'details-title', this.getPromptTitle(prompt));
+    const meta = this.createTextElement('p', 'details-meta', `Captured ${new Date(prompt.timestamp).toLocaleString()}`);
 
-    const sourceSection = this.createDetailsSection('Source');
-    const sourceLink = document.createElement('a');
-    sourceLink.href = /^https?:/i.test(prompt.sourceUrl) ? prompt.sourceUrl : '#';
-    sourceLink.target = '_blank';
-    sourceLink.rel = 'noopener noreferrer';
-    sourceLink.textContent = prompt.sourceUrl;
-    sourceSection.appendChild(sourceLink);
+    // Only web addresses become links; anything else shows as plain text.
+    const source = this.createTextElement('p', 'details-meta details-source', 'Source: ');
+    const isWebUrl = /^https?:/i.test(prompt.sourceUrl);
+    const sourceLink = this.createTextElement(isWebUrl ? 'a' : 'span', '', prompt.sourceUrl);
+    if (isWebUrl) {
+      sourceLink.href = prompt.sourceUrl;
+      sourceLink.target = '_blank';
+      sourceLink.rel = 'noopener noreferrer';
+    }
+    source.appendChild(sourceLink);
 
-    const promptSection = this.createDetailsSection('Prompt');
-    const copyBtn = document.createElement('button');
-    copyBtn.className = 'copy-prompt-btn';
-    copyBtn.textContent = 'Copy';
+    const markdownHeader = document.createElement('div');
+    markdownHeader.className = 'details-section-header';
+    const copyBtn = this.createTextElement('button', 'button copy-prompt-btn', 'Copy Markdown');
+    copyBtn.type = 'button';
     copyBtn.addEventListener('click', () => this.copyWithFeedback(copyBtn, prompt.generatedPrompt));
-    promptSection.querySelector('h3').appendChild(copyBtn);
+    markdownHeader.append(this.createTextElement('h3', '', 'Markdown'), copyBtn);
 
-    const content = document.createElement('div');
-    content.className = 'details-content';
-    content.textContent = prompt.generatedPrompt;
-    promptSection.appendChild(content);
+    const content = this.createTextElement('pre', 'details-content', prompt.generatedPrompt);
+    content.dir = 'auto';
 
-    this.elements.detailsPanel.replaceChildren(timestampSection, sourceSection, promptSection);
+    this.elements.detailsPanel.replaceChildren(title, meta, source, markdownHeader, content);
   }
 
-  createDetailsSection(heading) {
-    const section = document.createElement('div');
-    section.className = 'details-section';
-    if (heading) {
-      const h3 = document.createElement('h3');
-      h3.textContent = heading;
-      section.appendChild(h3);
-    }
-    return section;
+  showStatus(message, isError = false) {
+    this.elements.status.textContent = message;
+    this.elements.status.classList.toggle('is-error', isError);
+    clearTimeout(this.statusTimeout);
+    this.statusTimeout = setTimeout(() => {
+      this.elements.status.textContent = '';
+    }, 4000);
   }
 
   flashButtonText(button, text) {
@@ -333,7 +400,7 @@ class DashboardManager {
   copyWithFeedback(button, text) {
     navigator.clipboard
       .writeText(text)
-      .then(() => this.flashButtonText(button, 'Copied!'))
+      .then(() => this.flashButtonText(button, 'Copied'))
       .catch((error) => {
         console.error('Copy failed:', error);
         this.flashButtonText(button, 'Copy failed');
@@ -351,20 +418,27 @@ class DashboardManager {
     const markdownWithXml = selectedPrompts
       .map((p) => `<website_section name="${p.sourceUrl.replace(/"/g, '&quot;')}">\n${p.generatedPrompt}\n</website_section>`)
       .join('\n\n');
-    this.copyWithFeedback(this.elements.exportBtn, markdownWithXml);
+    const noun = selectedPrompts.length === 1 ? 'prompt' : 'prompts';
+    navigator.clipboard
+      .writeText(markdownWithXml)
+      .then(() => this.showStatus(`Copied ${selectedPrompts.length} saved ${noun} as one prompt.`))
+      .catch((error) => {
+        console.error('Copy failed:', error);
+        this.showStatus("Couldn't copy. Try again.", true);
+      });
   }
 
   deleteSelected() {
     const promptIds = [...this.state.selectedPromptIds];
     if (promptIds.length === 0) return;
-    const noun = promptIds.length === 1 ? 'prompt' : 'prompts';
+    const noun = promptIds.length === 1 ? 'saved prompt' : 'saved prompts';
     if (!confirm(`Delete ${promptIds.length} ${noun}? This cannot be undone.`)) return;
 
     // The background worker owns all storage writes; the storage listener re-renders once it lands.
     chrome.runtime.sendMessage({ type: 'DELETE_PROMPTS', promptIds }, (response) => {
       if (!response || !response.ok) {
         console.error('Failed to delete prompts:', chrome.runtime.lastError || response);
-        this.flashButtonText(this.elements.deleteBtn, 'Delete failed');
+        this.showStatus("Couldn't delete the selected prompts. Try again.", true);
       }
     });
   }

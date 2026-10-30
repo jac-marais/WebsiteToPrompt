@@ -3,12 +3,12 @@ const CONTENT_SCRIPT_FILES = ['libs/turndown.js', 'content-script.js'];
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
     id: 'enableSelectionMode',
-    title: 'Select content to convert',
+    title: 'Select content',
     contexts: ['all'],
   });
   chrome.contextMenus.create({
     id: 'openDashboard',
-    title: 'Open Dashboard',
+    title: 'Open saved prompts',
     contexts: ['all'],
   });
 });

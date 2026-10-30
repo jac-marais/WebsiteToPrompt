@@ -1,0 +1,138 @@
+/* Shared tokens and base rules for the extension pages. The in-page UI carries its own fixed ink values. */
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --surface: #f5f6f8;
+  --surface-2: #eceef2;
+  --border: #e3e6eb;
+  --border-strong: #7d8491;
+  --text: #16181d;
+  --text-muted: #555c69;
+  --link: #7a5800;
+  --accent: #ffd60a;
+  --accent-hover: #f5c800;
+  --accent-border: #7a5800;
+  --on-accent: #16181d;
+  --selection: #fff4c2;
+  --danger: #b42318;
+  --success: #067647;
+  --focus: #16181d;
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121418;
+    --surface: #1b1e24;
+    --surface-2: #252932;
+    --border: #2c3039;
+    --border-strong: #8a93a3;
+    --text: #eceef1;
+    --text-muted: #a2a9b5;
+    --link: #ffd60a;
+    --accent-hover: #ffe04d;
+    --accent-border: #ffd60a;
+    --selection: #3a3219;
+    --danger: #ff8a80;
+    --success: #5bd69a;
+    --focus: #ffd60a;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 400 14px/20px var(--font-sans);
+}
+
+a {
+  color: var(--link);
+  text-decoration: underline;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: 600 13px/20px var(--font-sans);
+  cursor: pointer;
+}
+
+.button:hover {
+  background: var(--surface-2);
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: default;
+  background: var(--bg);
+}
+
+.button-primary {
+  border-color: var(--accent-border);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.button-primary:hover {
+  background: var(--accent-hover);
+}
+
+.button-primary:disabled {
+  background: var(--accent);
+}
+
+.coffee-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 16px;
+  color: var(--text-muted);
+  text-decoration: none;
+  font: 400 12px/16px var(--font-mono);
+}
+
+.coffee-link:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.coffee-link img {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+}
+
+/* Forced colors drop authored fills, so selected states switch to the system highlight. */
+@media (forced-colors: active) {
+  [aria-pressed='true'],
+  [aria-current='true'] {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+    border-color: HighlightText;
+  }
+}

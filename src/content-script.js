@@ -11,12 +11,184 @@
   let lockOriginX = 0;
   let lockOriginY = 0;
   let accumulatedDelta = 0;
-  let stylesInjected = false;
+  let pickerHost = null;
 
-  // Original elements are kept so Revert restores the live node with its event listeners.
+  // Original elements are kept so Restore puts back the live node with its event listeners.
   const originalElementByContainer = new WeakMap();
 
   const SKIP_TAGS = new Set(['HTML', 'HEAD', 'SCRIPT', 'STYLE', 'LINK', 'META', 'NOSCRIPT', 'BR', 'BODY']);
+
+  // Page rules still reach the shadow host, and only !important host rules beat the page's !important.
+  const IN_PAGE_CSS = `
+    :host {
+      all: initial !important;
+      display: block !important;
+      margin: 12px 0 !important;
+    }
+    :host([popover]) {
+      position: fixed !important;
+      inset: 0 !important;
+      margin: 0 !important;
+      pointer-events: none !important;
+    }
+    * {
+      box-sizing: border-box;
+    }
+
+    #websiteToPrompt_highlightOverlay {
+      position: fixed;
+      display: none;
+      border: 2px solid #FFD60A;
+      border-radius: 2px;
+      background: rgba(255, 214, 10, 0.16);
+      box-shadow: 0 0 0 1px #16181D, inset 0 0 0 1px #16181D;
+    }
+    #websiteToPrompt_breadcrumbBar {
+      position: fixed;
+      left: 50%;
+      bottom: 12px;
+      transform: translateX(-50%);
+      display: none;
+      align-items: center;
+      gap: 10px;
+      max-width: calc(100vw - 24px);
+      padding: 6px 10px 6px 6px;
+      border: 1px solid #2A2E37;
+      border-radius: 10px;
+      background: rgba(22, 24, 29, 0.96);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+      color: #ECEEF1;
+      font: 400 12px/18px system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      white-space: nowrap;
+    }
+    .wtp-depth {
+      padding: 0 6px;
+      border-radius: 4px;
+      background: #2A2E37;
+      color: #FFD60A;
+      font: 600 11px/18px ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+    .wtp-ancestors,
+    .wtp-current {
+      font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    }
+    .wtp-ancestors {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: #A2A9B5;
+    }
+    .wtp-current {
+      flex: none;
+      color: #FFD60A;
+      font-weight: 600;
+    }
+    .wtp-hints {
+      flex: none;
+      padding-left: 10px;
+      border-left: 1px solid #2A2E37;
+      color: #A2A9B5;
+    }
+    @media (max-width: 720px) {
+      .wtp-hints {
+        display: none;
+      }
+    }
+
+    .wtp-card {
+      overflow: hidden;
+      border: 1px solid #2A2E37;
+      border-top: 3px solid #FFD60A;
+      border-radius: 10px;
+      background: #16181D;
+      color: #ECEEF1;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+      font: 400 12px/16px system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      text-align: start;
+    }
+    .wtp-card-header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 8px 8px 12px;
+      border-bottom: 1px solid #2A2E37;
+    }
+    .wtp-card-title {
+      font-weight: 600;
+    }
+    .wtp-card-status {
+      color: #A2A9B5;
+    }
+    .wtp-card-status.is-saved {
+      color: #5BD69A;
+    }
+    .wtp-card-status.is-failed {
+      color: #FF8A80;
+    }
+    .website-to-prompt-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-inline-start: auto;
+    }
+    .wtp-button {
+      min-height: 28px;
+      padding: 0 10px;
+      border: 1px solid #8A93A3;
+      border-radius: 6px;
+      background: #2A2E37;
+      color: #ECEEF1;
+      font: 600 12px/1 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      cursor: pointer;
+    }
+    .wtp-button:hover {
+      background: #343944;
+    }
+    .wtp-button:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+    .wtp-button:focus-visible {
+      outline: 2px solid #FFD60A;
+      outline-offset: 2px;
+    }
+    .wtp-button-primary {
+      border-color: #FFD60A;
+      background: #FFD60A;
+      color: #16181D;
+    }
+    .wtp-button-primary:hover {
+      background: #FFE04D;
+    }
+    .wtp-button.is-done {
+      border-color: #5BD69A;
+      background: #5BD69A;
+      color: #16181D;
+    }
+    .wtp-button.is-error {
+      border-color: #FF8A80;
+      background: #2A2E37;
+      color: #FF8A80;
+    }
+    .website-to-prompt-markdown {
+      max-height: min(60vh, 560px);
+      margin: 0;
+      padding: 12px 14px;
+      overflow: auto;
+      color: #ECEEF1;
+      font: 400 13px/20px ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      tab-size: 2;
+    }
+
+    @media (forced-colors: active) {
+      #websiteToPrompt_highlightOverlay {
+        border-color: Highlight;
+      }
+    }
+  `;
 
   const turndownService = new TurndownService({
     headingStyle: 'atx',
@@ -27,14 +199,16 @@
     linkStyle: 'inlined',
     linkReferenceStyle: 'full',
     preformattedCode: true,
+    // Capture hosts serialize empty, and Turndown sends empty nodes here before any rule.
+    blankReplacement: function (content, node) {
+      var captures = node.matches('[data-wtp-markdown]') ? [node] : node.querySelectorAll('[data-wtp-markdown]');
+      var markdown = Array.from(captures, function (capture) { return capture.getAttribute('data-wtp-markdown'); }).join('\n\n');
+      if (markdown) return '\n\n' + markdown + '\n\n';
+      return node.isBlock ? '\n\n' : '';
+    },
   });
 
   turndownService.remove(['script', 'style', 'noscript', 'template']);
-
-  // A selection that contains an earlier capture must not include that capture's buttons.
-  turndownService.remove(function (node) {
-    return node.classList && node.classList.contains('website-to-prompt-controls');
-  });
 
   // --- Table conversion rules ---
 
@@ -220,9 +394,9 @@
     updateBreadcrumb(el);
   }
 
-  function appendStyledText(parent, text, cssText) {
+  function appendText(parent, text, className) {
     var span = document.createElement('span');
-    span.style.cssText = cssText;
+    span.className = className;
     span.textContent = text;
     parent.appendChild(span);
   }
@@ -237,14 +411,11 @@
 
     // Built with textContent because ids and class names come from the page.
     breadcrumbBar.replaceChildren();
-    appendStyledText(breadcrumbBar, '[' + (currentDepthIndex + 1) + '/' + elementStack.length + ']', 'color:#ffd700;margin-right:12px');
-    ancestors.forEach(function (ancestor) {
-      appendStyledText(breadcrumbBar, ancestor, 'color:#aaa');
-      appendStyledText(breadcrumbBar, ' › ', 'color:#555');
-    });
-    appendStyledText(breadcrumbBar, getShortDescriptor(el), 'color:#87CEEB;font-weight:bold');
-    appendStyledText(breadcrumbBar, 'scroll to pick a parent · click to capture · Esc to cancel', 'color:#888;margin-left:12px;font-size:11px');
-    breadcrumbBar.style.display = 'block';
+    appendText(breadcrumbBar, currentDepthIndex + 1 + '/' + elementStack.length, 'wtp-depth');
+    appendText(breadcrumbBar, ancestors.map(function (ancestor) { return ancestor + ' › '; }).join(''), 'wtp-ancestors');
+    appendText(breadcrumbBar, getShortDescriptor(el), 'wtp-current');
+    appendText(breadcrumbBar, 'Scroll to widen or narrow · Click to save · Esc to cancel', 'wtp-hints');
+    breadcrumbBar.style.display = 'flex';
   }
 
   // --- Selection Mode helpers ---
@@ -256,8 +427,7 @@
     document.addEventListener('wheel', handleWheel, { capture: true, passive: false });
     document.addEventListener('click', handleClick, true);
     document.addEventListener('keydown', handleKeyDown, true);
-    createOverlayElement();
-    createBreadcrumbBar();
+    createPicker();
   }
 
   function disableSelectionMode() {
@@ -267,8 +437,7 @@
     document.removeEventListener('wheel', handleWheel, true);
     document.removeEventListener('click', handleClick, true);
     document.removeEventListener('keydown', handleKeyDown, true);
-    removeOverlayElement();
-    removeBreadcrumbBar();
+    removePicker();
     elementStack = [];
     currentDepthIndex = 0;
     stackLocked = false;
@@ -335,21 +504,36 @@
     }
   }
 
-  function flashButton(button, label, backgroundColor) {
+  function flashButton(button, label, className) {
     button.textContent = label;
-    button.style.backgroundColor = backgroundColor;
-    setTimeout(() => {
+    button.classList.remove('is-done', 'is-error');
+    button.classList.add(className);
+    clearTimeout(button.flashTimeout);
+    button.flashTimeout = setTimeout(() => {
       button.textContent = button.dataset.label;
-      button.style.backgroundColor = '#fff';
+      button.classList.remove(className);
     }, 1500);
+  }
+
+  function writeClipboard(text) {
+    if (navigator.clipboard) return navigator.clipboard.writeText(text);
+    // Plain http pages have no Clipboard API, so copy through a one-off copy event instead.
+    const onCopy = (event) => {
+      event.clipboardData.setData('text/plain', text);
+      event.preventDefault();
+    };
+    document.addEventListener('copy', onCopy, true);
+    const copied = document.execCommand('copy');
+    document.removeEventListener('copy', onCopy, true);
+    return copied ? Promise.resolve() : Promise.reject(new Error('The browser blocked the copy.'));
   }
 
   function createControlButton(label, onClick) {
     const button = document.createElement('button');
     button.type = 'button';
+    button.className = 'wtp-button';
     button.textContent = label;
     button.dataset.label = label;
-    styleButton(button);
     button.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -358,63 +542,96 @@
     return button;
   }
 
+  function createTextElement(tagName, className, text) {
+    const element = document.createElement(tagName);
+    element.className = className;
+    element.textContent = text;
+    return element;
+  }
+
   /**
    * Convert the clicked element to Markdown, save it as a prompt, and show the Markdown in its place.
    */
   function transformElement(element) {
     const markdown = htmlToMarkdown(element);
-    const promptId = Date.now() + '_' + Math.random().toString(36).slice(2);
-
-    savePrompt({
-      id: promptId,
+    const prompt = {
+      id: Date.now() + '_' + Math.random().toString(36).slice(2),
       timestamp: Date.now(),
       sourceUrl: window.location.href,
       elementPath: getElementSelectorPath(element),
       elementContent: element.outerHTML,
       generatedPrompt: markdown,
       tags: [],
-    });
+    };
 
-    injectStyles();
     const container = document.createElement('div');
     container.className = 'website-to-prompt-container';
+    // The shadow root does not serialize, so a wider capture reads this Markdown instead.
+    container.setAttribute('data-wtp-markdown', markdown);
+    const shadowRoot = createShadowRoot(container);
 
-    const markdownText = document.createElement('div');
-    markdownText.className = 'website-to-prompt-markdown';
-    markdownText.textContent = markdown;
+    const status = createTextElement('span', 'wtp-card-status', 'Saving…');
+    status.setAttribute('role', 'status');
 
     const controls = document.createElement('div');
     controls.className = 'website-to-prompt-controls';
-    controls.appendChild(createControlButton('Copy', (button) => {
-      navigator.clipboard
-        .writeText(markdown)
-        .then(() => flashButton(button, 'Copied!', '#e6ffe6'))
+    const copyButton = createControlButton('Copy Markdown', (button) => {
+      writeClipboard(markdown)
+        .then(() => flashButton(button, 'Copied', 'is-done'))
         .catch((error) => {
           console.warn('WebsiteToPrompt: copy failed', error);
-          flashButton(button, 'Copy failed', '#ffe6e6');
+          flashButton(button, 'Copy failed', 'is-error');
         });
-    }));
-    controls.appendChild(createControlButton('Revert', () => revertElement(container)));
-    controls.appendChild(createControlButton('Open Dashboard', () => {
-      chrome.runtime.sendMessage({ type: 'OPEN_DASHBOARD', promptId });
-    }));
+    });
+    copyButton.classList.add('wtp-button-primary');
+    const restoreButton = createControlButton('Restore', () => restoreElement(container));
+    restoreButton.title = 'Put the original page section back. The saved prompt stays saved.';
+    let savedPromptId;
+    const openButton = createControlButton('Open in Saved prompts', () => {
+      chrome.runtime.sendMessage({ type: 'OPEN_DASHBOARD', promptId: savedPromptId });
+    });
+    openButton.disabled = true;
+    controls.append(copyButton, restoreButton, openButton);
 
-    container.appendChild(controls);
-    container.appendChild(markdownText);
+    const header = document.createElement('div');
+    header.className = 'wtp-card-header';
+    header.append(createTextElement('span', 'wtp-card-title', 'Markdown'), status, controls);
+
+    const markdownText = createTextElement('pre', 'website-to-prompt-markdown', markdown);
+    markdownText.dir = 'auto';
+
+    const card = document.createElement('div');
+    card.className = 'wtp-card';
+    card.append(header, markdownText);
+    shadowRoot.appendChild(card);
 
     originalElementByContainer.set(container, element);
     element.replaceWith(container);
-  }
 
-  function savePrompt(prompt) {
-    chrome.runtime.sendMessage({ type: 'SAVE_PROMPT', prompt }, (response) => {
-      if (!response || !response.ok) {
-        console.error('WebsiteToPrompt: failed to save prompt', chrome.runtime.lastError || response);
-      }
+    savePrompt(prompt, (saved) => {
+      status.textContent = saved ? '✓ Saved' : 'Not saved. Copy it now.';
+      status.classList.add(saved ? 'is-saved' : 'is-failed');
+      // The deep link names the prompt only after the background confirms it exists.
+      if (saved) savedPromptId = prompt.id;
+      openButton.disabled = false;
     });
   }
 
-  function revertElement(container) {
+  function savePrompt(prompt, onResult) {
+    try {
+      chrome.runtime.sendMessage({ type: 'SAVE_PROMPT', prompt }, (response) => {
+        const saved = Boolean(response && response.ok);
+        if (!saved) console.error('WebsiteToPrompt: failed to save prompt', chrome.runtime.lastError || response);
+        onResult(saved);
+      });
+    } catch (error) {
+      // sendMessage throws when the extension was reloaded after this page loaded.
+      console.error('WebsiteToPrompt: failed to save prompt', error);
+      onResult(false);
+    }
+  }
+
+  function restoreElement(container) {
     const originalElement = originalElementByContainer.get(container);
     if (originalElement) {
       container.replaceWith(originalElement);
@@ -449,110 +666,34 @@
     return parts.join('>');
   }
 
-  // Create the highlight overlay (semi-transparent rectangle).
-  function createOverlayElement() {
+  function createShadowRoot(host) {
+    host.setAttribute('data-wtp-internal', 'true');
+    const shadowRoot = host.attachShadow({ mode: 'open' });
+    const style = document.createElement('style');
+    style.textContent = IN_PAGE_CSS;
+    shadowRoot.appendChild(style);
+    return shadowRoot;
+  }
+
+  function createPicker() {
+    pickerHost = document.createElement('div');
+    pickerHost.popover = 'manual';
     highlightOverlay = document.createElement('div');
     highlightOverlay.id = 'websiteToPrompt_highlightOverlay';
-    highlightOverlay.setAttribute('data-wtp-internal', 'true');
-    highlightOverlay.style.cssText = [
-      'position: fixed',
-      'z-index: 2147483646',
-      'background-color: rgba(135, 206, 235, 0.3)',
-      'pointer-events: none',
-      'border: 2px solid #00f',
-      'box-sizing: border-box',
-      'display: none',
-      'transition: top 0.1s ease-out, left 0.1s ease-out, width 0.1s ease-out, height 0.1s ease-out',
-    ].join('; ');
-    document.documentElement.appendChild(highlightOverlay);
-  }
-
-  function removeOverlayElement() {
-    if (highlightOverlay) {
-      highlightOverlay.remove();
-      highlightOverlay = null;
-    }
-  }
-
-  function createBreadcrumbBar() {
     breadcrumbBar = document.createElement('div');
     breadcrumbBar.id = 'websiteToPrompt_breadcrumbBar';
-    breadcrumbBar.setAttribute('data-wtp-internal', 'true');
-    breadcrumbBar.style.cssText = [
-      'position: fixed',
-      'bottom: 0',
-      'left: 0',
-      'right: 0',
-      'z-index: 2147483647',
-      'background: rgba(0, 0, 0, 0.85)',
-      'color: #fff',
-      "font-family: 'SF Mono', Monaco, Menlo, monospace",
-      'font-size: 13px',
-      'padding: 8px 16px',
-      'pointer-events: none',
-      'display: none',
-      'border-top: 1px solid rgba(255, 255, 255, 0.1)',
-      'white-space: nowrap',
-      'overflow: hidden',
-      'text-overflow: ellipsis',
-    ].join('; ');
-    document.documentElement.appendChild(breadcrumbBar);
+    createShadowRoot(pickerHost).append(highlightOverlay, breadcrumbBar);
+    document.documentElement.appendChild(pickerHost);
+    // The top layer keeps the picker above every z-index and above an open modal dialog.
+    pickerHost.showPopover();
   }
 
-  function removeBreadcrumbBar() {
-    if (breadcrumbBar) {
-      breadcrumbBar.remove();
+  function removePicker() {
+    if (pickerHost) {
+      pickerHost.remove();
+      pickerHost = null;
+      highlightOverlay = null;
       breadcrumbBar = null;
     }
-  }
-
-  /**
-   * Inject the CSS for the Markdown container the first time something is captured on this page.
-   */
-  function injectStyles() {
-    if (stylesInjected) return;
-    stylesInjected = true;
-    const style = document.createElement('style');
-    style.textContent = `
-      .website-to-prompt-container {
-        all: initial;
-        display: block;
-        position: relative;
-        margin: 0.5em 0;
-        padding: 1em;
-        border: 1px dashed #87CEEB;
-        border-radius: 6px;
-        background: #fff;
-        color: #1a202c;
-      }
-      .website-to-prompt-controls {
-        display: flex;
-        justify-content: flex-end;
-        margin-bottom: 0.5em;
-      }
-      .website-to-prompt-markdown {
-        font-family: ui-monospace, 'SF Mono', Menlo, monospace;
-        font-size: 13px;
-        line-height: 1.5;
-        white-space: pre-wrap;
-        overflow-wrap: anywhere;
-        color: #1a202c;
-      }
-    `;
-    (document.head || document.documentElement).appendChild(style);
-  }
-
-  function styleButton(btn) {
-    btn.style.cssText = `
-      all: initial;
-      padding: 4px 8px;
-      margin: 0 4px;
-      cursor: pointer;
-      border: 1px solid #ccc;
-      border-radius: 4px;
-      background: #fff;
-      color: #000;
-      font: 12px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    `;
   }
 })();

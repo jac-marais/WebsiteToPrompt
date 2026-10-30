@@ -2,20 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>WebsiteToPrompt Dashboard</title>
+    <title>Saved prompts · WebsiteToPrompt</title>
+    <link rel="icon" href="icons/icon-32.png" />
+    <link rel="stylesheet" href="tokens.css" />
     <style>
-      /* Main Dashboard Styles */
-      * {
-        box-sizing: border-box;
-        margin: 0;
-        padding: 0;
-      }
-
       body {
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell,
-          sans-serif;
-        line-height: 1.4;
-        color: #333;
         height: 100vh;
       }
 
@@ -26,306 +17,402 @@
       }
 
       .dashboard-header {
-        background: #fff;
-        border-bottom: 1px solid #e5e5e5;
-        padding: 1rem;
-      }
-
-      .header-controls {
         display: flex;
-        justify-content: space-between;
+        flex-wrap: wrap;
         align-items: center;
-        max-width: 1200px;
-        margin: 0 auto;
+        gap: 12px 24px;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border);
       }
 
-      .view-modes {
+      .dashboard-header h1 {
         display: flex;
-        gap: 0.5rem;
-      }
-
-      .view-mode-btn {
-        padding: 0.5rem 1rem;
-        border: 1px solid #e5e5e5;
-        border-radius: 4px;
-        background: #fff;
-        cursor: pointer;
-      }
-
-      .view-mode-btn.active {
-        background: #e5e7ff;
-        border-color: #6366f1;
-        color: #4f46e5;
+        align-items: center;
+        gap: 8px;
+        margin: 0;
+        font: 600 16px/24px var(--font-sans);
       }
 
       .search-bar {
         position: relative;
+        flex: 0 1 360px;
       }
 
       .search-input {
-        padding: 0.5rem 1rem 0.5rem 2.5rem;
-        border: 1px solid #e5e5e5;
-        border-radius: 4px;
-        width: 300px;
+        width: 100%;
+        height: 36px;
+        padding: 0 12px 0 36px;
+        border: 1px solid var(--border-strong);
+        border-radius: 6px;
+        background: var(--bg);
+        color: var(--text);
+        font: inherit;
       }
 
       .search-icon {
         position: absolute;
-        left: 0.75rem;
+        left: 10px;
         top: 50%;
         transform: translateY(-50%);
-        color: #6b7280;
+        color: var(--text-muted);
+      }
+
+      .view-modes {
+        display: inline-flex;
+        gap: 2px;
+        margin-left: auto;
+        padding: 2px;
+        border: 1px solid var(--border-strong);
+        border-radius: 6px;
+      }
+
+      .view-mode-btn {
+        min-height: 32px;
+        padding: 0 12px;
+        border: 0;
+        border-radius: 4px;
+        background: transparent;
+        color: var(--text-muted);
+        font-weight: 600;
+        font-size: 13px;
+        cursor: pointer;
+      }
+
+      .view-mode-btn[aria-pressed='true'] {
+        background: var(--text);
+        color: var(--bg);
       }
 
       .dashboard-content {
         flex: 1;
         display: flex;
-        flex-flow: row nowrap;
-        max-height: calc(100vh - 90px);
         min-height: 0;
         overflow: hidden;
       }
 
       .groups-panel {
-        width: 200px;
-        border-right: 1px solid #e5e5e5;
-        background: #fff;
+        width: 224px;
+        flex: none;
+        padding: 8px;
+        border-right: 1px solid var(--border);
+        background: var(--surface);
         overflow-y: auto;
       }
+
       .group-item {
-        padding: 0.75rem 1rem;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        min-height: 36px;
+        padding: 0 8px 0 12px;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        font-size: 13px;
+        text-align: left;
         cursor: pointer;
-        border-bottom: 1px solid #f3f4f6;
+        overflow-wrap: anywhere;
       }
+
       .group-item:hover {
-        background: #f9fafb;
+        background: var(--surface-2);
       }
+
       .group-item.selected {
-        background: #e5e7ff;
+        background: var(--selection);
+        font-weight: 600;
+      }
+
+      .group-count {
+        margin-left: auto;
+        color: var(--text-muted);
+        font-weight: 400;
       }
 
       .prompts-panel {
-        width: 480px;
-        border-right: 1px solid #e5e5e5;
-        background: #fff;
+        width: 420px;
+        flex: none;
+        min-width: 200px;
+        display: flex;
+        flex-direction: column;
+        border-right: 1px solid var(--border);
+      }
+
+      .selection-controls {
+        display: none;
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .selection-controls.active {
+        display: block;
+      }
+
+      .selection-actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .selection-actions .button {
+        min-height: 32px;
+        padding: 0 10px;
+        font-size: 12px;
+      }
+
+      .selected-count {
+        margin-right: auto;
+        font-weight: 600;
+        font-size: 13px;
+      }
+
+      .delete-btn {
+        color: var(--danger);
+      }
+
+      .selection-hint {
+        margin: 6px 0 0;
+        color: var(--text-muted);
+        font-size: 12px;
+        line-height: 16px;
+      }
+
+      .dashboard-status {
+        margin: 6px 0 0;
+        font-size: 12px;
+        line-height: 16px;
+        color: var(--success);
+      }
+
+      .dashboard-status.is-error {
+        color: var(--danger);
+      }
+
+      .dashboard-status:empty {
+        display: none;
+      }
+
+      #promptsList {
+        flex: 1;
         overflow-y: auto;
-        position: relative;
       }
 
       .prompt-item {
-        padding: 1rem;
-        border-bottom: 1px solid #f3f4f6;
+        display: flex;
+        gap: 10px;
+        padding: 12px 16px 12px 10px;
+        border-bottom: 1px solid var(--border);
+        border-left: 3px solid transparent;
         cursor: pointer;
       }
+
       .prompt-item:hover {
-        background: #f9fafb;
+        background: var(--surface);
       }
+
       .prompt-item.selected {
-        background: #e5e7ff;
+        background: var(--selection);
       }
-      .prompt-meta {
-        font-size: 0.875rem;
-        color: #6b7280;
-        margin-bottom: 0.5rem;
+
+      .prompt-item.viewing {
+        border-left-color: var(--text);
       }
-      .prompt-content {
-        font-size: 0.875rem;
+
+      .prompt-checkbox {
+        flex: none;
+        width: 16px;
+        height: 16px;
+        margin: 2px 0 0;
+        accent-color: var(--text);
+        cursor: pointer;
+      }
+
+      .prompt-text {
+        min-width: 0;
+      }
+
+      .prompt-title {
+        font-weight: 600;
         overflow: hidden;
         text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .prompt-content {
+        color: var(--text-muted);
+        font-size: 13px;
+        line-height: 18px;
+        overflow: hidden;
+        overflow-wrap: anywhere;
         display: -webkit-box;
         -webkit-line-clamp: 2;
         line-clamp: 2;
         -webkit-box-orient: vertical;
       }
 
-      .panel-resizer {
-        width: 10px;
-        cursor: col-resize;
-        background-color: #e5e5e5;
-        transition: background-color 0.2s;
-        position: relative;
+      .prompt-meta {
+        margin-top: 2px;
+        color: var(--text-muted);
+        font-size: 12px;
+        line-height: 16px;
       }
+
+      .panel-resizer {
+        width: 8px;
+        flex: none;
+        margin-left: -4px;
+        margin-right: -4px;
+        position: relative;
+        z-index: 1;
+        cursor: col-resize;
+      }
+
       .panel-resizer:hover,
       .panel-resizer.active {
-        background-color: #6366f1;
-      }
-      .panel-resizer::after {
-        content: '';
-        position: absolute;
-        left: 4px;
-        top: 50%;
-        transform: translateY(-50%);
-        height: 20px;
-        width: 2px;
-        background-color: #fff;
-        border-radius: 2px;
+        background: linear-gradient(var(--accent-border), var(--accent-border)) center / 2px 100% no-repeat;
       }
 
       .details-panel {
         flex: 1;
-        background: #fff;
+        min-width: 0;
+        padding: 24px;
         overflow-y: auto;
-        padding: 1rem;
       }
 
-      .details-section {
-        margin-bottom: 1.5rem;
+      .details-title {
+        margin: 0;
+        font: 600 16px/24px var(--font-sans);
+        overflow-wrap: anywhere;
       }
 
-      .details-section h3 {
-        font-size: 0.875rem;
+      .details-meta {
+        margin: 4px 0 0;
+        color: var(--text-muted);
+        font-size: 13px;
+      }
+
+      .details-source {
+        overflow-wrap: anywhere;
+      }
+
+      .details-section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin: 24px 0 8px;
+      }
+
+      .details-section-header h3 {
+        margin: 0;
+        font-size: 13px;
         font-weight: 600;
-        margin-bottom: 0.5rem;
       }
 
       .details-content {
-        font-size: 0.875rem;
-        background: #f9fafb;
-        padding: 0.75rem;
-        border-radius: 4px;
+        margin: 0;
+        padding: 16px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--surface);
+        font: 400 13px/21px var(--font-mono);
         white-space: pre-wrap;
-        height: 100%;
-        overflow-y: auto;
-      }
-
-      .selection-controls {
-        padding: 0.5rem 1rem;
-        background: #f9fafb;
-        border-bottom: 1px solid #e5e5e5;
-        display: none;
-      }
-      .selection-controls.active {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-      }
-      .selection-controls button {
-        padding: 0.5rem 1rem;
-        border: 1px solid #e5e5e5;
-        border-radius: 4px;
-        background: #fff;
-        cursor: pointer;
-        transition: background-color 0.3s, border-color 0.3s;
-      }
-      .selection-controls button:hover {
-        background: #e5e7ff;
-        border-color: #6366f1;
-      }
-      .selection-controls button:active {
-        background: #d1d5ff;
-        border-color: #4f46e5;
-      }
-
-      .selection-controls button:disabled {
-        opacity: 0.5;
-        cursor: default;
-        background: #fff;
-        border-color: #e5e5e5;
-      }
-      .selection-controls .selected-count {
-        margin-right: auto;
-        color: #6b7280;
-        font-size: 0.875rem;
-      }
-
-      .group-count {
-        color: #6b7280;
-        font-size: 0.875rem;
+        overflow-wrap: anywhere;
+        tab-size: 2;
       }
 
       .empty-state {
-        padding: 2rem 1rem;
-        color: #6b7280;
+        max-width: 360px;
+        margin: 0 auto;
+        padding: 32px 16px;
+        color: var(--text-muted);
         text-align: center;
       }
 
-      .copy-prompt-btn {
-        margin-left: 10px;
-        padding: 0 5px;
+      .empty-state h2 {
+        margin: 0 0 8px;
+        color: var(--text);
+        font-size: 15px;
+      }
+
+      .empty-state p {
+        margin: 0 0 12px;
       }
 
       .dashboard-footer {
-        background: #ffeea2;
-        padding: 4px;
-        position: sticky;
-        bottom: 0;
-        z-index: 10;
-        border-top: 1px solid #e5e5e5;
+        border-top: 1px solid var(--border);
+        background: var(--surface);
       }
 
-      .donation-button {
-        display: flex;
+      .dashboard-footer .coffee-link {
         justify-content: center;
-        align-items: center;
-        width: 100%;
-        padding: 4px;
-        border: none;
-        background: none;
-        color: #1a202c;
-        font-weight: 600;
-        font-size: 1rem;
-        text-decoration: none;
       }
 
-      .donation-button .profile-pic {
-        width: 20px;
-        height: 20px;
-        margin-right: 8px;
-        border-radius: 50%;
+      @media (forced-colors: active) {
+        .group-item.selected,
+        .prompt-item.selected {
+          forced-color-adjust: none;
+          background: Highlight;
+          color: HighlightText;
+        }
       }
     </style>
   </head>
   <body>
     <div class="dashboard">
       <header class="dashboard-header">
-        <div class="header-controls">
-          <div class="view-modes">
-            <button class="view-mode-btn" data-view="all">All</button>
-            <button class="view-mode-btn active" data-view="url">By URL</button>
-            <button class="view-mode-btn" data-view="date">By Date</button>
-          </div>
-          <div class="search-bar">
-            <input type="text" class="search-input" placeholder="Search prompts..." />
-            <svg class="search-icon" width="20" height="20" viewBox="0 0 20 20" fill="none">
-              <path
-                d="M8.5 3.5c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zm4.01 8.01l4.49 4.49-1.41 1.41-4.49-4.49c-.91.72-2.05 1.15-3.3 1.15-2.92 0-5.29-2.37-5.29-5.29s2.37-5.29 5.29-5.29 5.29 2.37 5.29 5.29c0 1.25-.43 2.39-1.15 3.3z"
-                fill="currentColor"
-              />
-            </svg>
-          </div>
+        <h1><img src="icons/icon-32.png" width="24" height="24" alt="" />Saved prompts</h1>
+        <div class="search-bar">
+          <input type="search" class="search-input" placeholder="Search text or website" aria-label="Search saved prompts" />
+          <svg class="search-icon" width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+            <path
+              d="M8.5 3.5c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zm4.01 8.01l4.49 4.49-1.41 1.41-4.49-4.49c-.91.72-2.05 1.15-3.3 1.15-2.92 0-5.29-2.37-5.29-5.29s2.37-5.29 5.29-5.29 5.29 2.37 5.29 5.29c0 1.25-.43 2.39-1.15 3.3z"
+              fill="currentColor"
+            />
+          </svg>
+        </div>
+        <div class="view-modes" role="group" aria-label="Group saved prompts">
+          <button type="button" class="view-mode-btn" data-view="all" aria-pressed="false">All</button>
+          <button type="button" class="view-mode-btn" data-view="url" aria-pressed="true">By URL</button>
+          <button type="button" class="view-mode-btn" data-view="date" aria-pressed="false">By date</button>
         </div>
       </header>
 
       <main class="dashboard-content">
-        <div class="groups-panel" id="groupsPanel">
-          <!-- Groups will be inserted here -->
-        </div>
+        <nav class="groups-panel" id="groupsPanel" aria-label="Groups"></nav>
 
         <div class="prompts-panel" id="promptsPanel">
           <div class="selection-controls" id="selectionControls">
-            <span class="selected-count">0 selected</span>
-            <button class="select-all-btn">Select All</button>
-            <button class="export-btn">Copy</button>
-            <button class="delete-btn">Delete</button>
+            <div class="selection-actions">
+              <span class="selected-count">0 selected</span>
+              <button type="button" class="button select-all-btn">Select all</button>
+              <button type="button" class="button button-primary export-btn">Copy as one prompt (0)</button>
+              <button type="button" class="button delete-btn">Delete</button>
+            </div>
+            <p class="selection-hint">Includes source URLs · Newest first. Shift-click selects a range.</p>
+            <p class="dashboard-status" id="dashboardStatus" role="status"></p>
           </div>
-          <div id="promptsList"></div>
+          <div id="promptsList">
+            <p class="empty-state" role="status">Loading saved prompts…</p>
+          </div>
         </div>
 
         <div class="panel-resizer" id="panelResizer"></div>
 
-        <div class="details-panel" id="detailsPanel">
-          <!-- Details will be inserted here -->
-        </div>
+        <div class="details-panel" id="detailsPanel"></div>
       </main>
       <footer class="dashboard-footer">
         <a
+          class="coffee-link"
           href="https://www.buymeacoffee.com/hello_nerdzs"
           target="_blank"
           rel="noopener noreferrer"
-          class="donation-button"
+          title="Buy the author a coffee"
         >
-          <img src="logo.png" alt="Profile" class="profile-pic" />
-          <span>`npm install coffee`</span>
+          <img src="logo.png" alt="" />
+          <span>npm install coffee</span>
         </a>
       </footer>
     </div>

@@ -14,6 +14,15 @@ const TEST_PAGE = `<!doctype html><html><body style="margin:40px; position:relat
 <script>document.getElementById('inc').addEventListener('click', () => { const c = document.getElementById('count'); c.textContent = String(Number(c.textContent) + 1); });</script>
 </body></html>`;
 
+// The hostile page also wraps #inner, so a blank wrapper around an earlier capture is covered too.
+const HOSTILE_CSS = 'button { all: unset !important; background: hotpink !important } div { display: block !important } * { font-family: fantasy !important }';
+const cardPage = (css, wrapInner) => `<!doctype html><html><head><meta charset="utf-8"><style>${css}</style></head><body>
+<div id="outer" style="width:400px">${wrapInner ? '<div id="innerWrap">' : ''}<div id="inner"><h2 id="innerTitle">Inner title</h2></div>${wrapInner ? '</div>' : ''}<p id="outerTail">Tail</p></div>
+<p id="rtl" dir="rtl" style="width:400px">שלום עולם</p>
+<dialog id="modal"><p id="dialogText">Dialog text</p></dialog>
+</body></html>`;
+const PAGES = { '/plain.html': cardPage('', false), '/hostile.html': cardPage(HOSTILE_CSS, true) };
+
 async function center(page, selector) {
   const box = await page.locator(selector).boundingBox();
   return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
@@ -42,7 +51,9 @@ const storedPrompts = (sw) => sw.evaluate(async () => (await chrome.storage.loca
   if (!sw) sw = await context.waitForEvent('serviceworker');
   const extensionId = sw.url().split('/')[2];
 
-  await context.route('http://test.local/**', (route) => route.fulfill({ contentType: 'text/html', body: TEST_PAGE }));
+  await context.route(/^https?:\/\/test\.local\//, (route) =>
+    route.fulfill({ contentType: 'text/html', body: PAGES[new URL(route.request().url()).pathname] || TEST_PAGE }));
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   const page = await context.newPage();
   page.on('pageerror', (e) => errors.push('page: ' + e.message));
   page.on('console', (m) => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
@@ -78,13 +89,13 @@ const storedPrompts = (sw) => sw.evaluate(async () => (await chrome.storage.loca
   assert.strictEqual(shown, prompts[0].generatedPrompt, 'page shows markdown');
   assert.strictEqual((await sw.evaluate(() => messageHandlers.GET_SELECTION_MODE())).enabled, false, 'click ends selection mode');
 
-  // 4. Revert keeps the live element, so page listeners still work.
+  // 4. Restore keeps the live element, so page listeners still work.
   await capture(page, sw, '#count', 2);
   prompts = await storedPrompts(sw);
   assert.ok(prompts[1].generatedPrompt.includes('Counter: 0') && !prompts[1].generatedPrompt.includes('Copy'), 'widget prompt: ' + prompts[1].generatedPrompt);
-  await page.locator('.website-to-prompt-container', { hasText: 'Counter' }).getByRole('button', { name: 'Revert' }).click();
+  await page.locator('.website-to-prompt-container', { hasText: 'Counter' }).getByRole('button', { name: 'Restore' }).click();
   await page.locator('#inc').click();
-  assert.strictEqual(await page.locator('#count').textContent(), '1', 'listener survives revert');
+  assert.strictEqual(await page.locator('#count').textContent(), '1', 'listener survives restore');
 
   // 5. Clicking an SVG shape no longer crashes and still ends selection mode.
   await capture(page, sw, '#iconRect');
@@ -97,8 +108,8 @@ const storedPrompts = (sw) => sw.evaluate(async () => (await chrome.storage.loca
   await capture(page, sw, '#title', 1);
   prompts = await storedPrompts(sw);
   const bodyPrompt = prompts[3].generatedPrompt;
-  assert.ok(!/Revert|Open Dashboard/.test(bodyPrompt), 'no control labels in nested capture');
-  await page.locator('.website-to-prompt-container').first().getByRole('button', { name: 'Revert' }).click();
+  assert.ok(!/Copy Markdown|Restore|Open in Saved prompts/.test(bodyPrompt), 'no control labels in nested capture');
+  await page.locator('.website-to-prompt-container').first().getByRole('button', { name: 'Restore' }).click();
 
   // 7. Inline links stay on one line with absolute URLs; script links and empty anchors are dropped.
   await capture(page, sw, '#links p');
@@ -127,10 +138,16 @@ const storedPrompts = (sw) => sw.evaluate(async () => (await chrome.storage.loca
   // 10. Shift range select, then delete with confirm; the view falls back cleanly.
   await dashboard.locator('.group-item', { hasText: 'bulk.example.com' }).click();
   const items = dashboard.locator('.prompt-item');
-  assert.strictEqual(await items.first().locator('.prompt-content').textContent(), 'bulk 19', 'newest prompt first');
+  assert.strictEqual(await items.first().locator('.prompt-title').textContent(), 'bulk 19', 'newest prompt first');
+  // A checkbox adds to the selection instead of replacing it.
+  await items.nth(6).locator('.prompt-checkbox').click();
+  assert.strictEqual(await dashboard.locator('.selected-count').textContent(), '2 selected', 'checkbox adds to selection');
+  await items.nth(6).locator('.prompt-checkbox').click();
+  assert.strictEqual(await dashboard.locator('.selected-count').textContent(), '1 selected', 'checkbox removes from selection');
   await items.nth(0).click();
   await items.nth(4).click({ modifiers: ['Shift'] });
   assert.strictEqual(await dashboard.locator('.selected-count').textContent(), '5 selected');
+  assert.strictEqual(await dashboard.locator('.export-btn').textContent(), 'Copy as one prompt (5)');
   dashboard.once('dialog', (d) => d.accept());
   await dashboard.locator('.delete-btn').click();
   await dashboard.waitForFunction(() => document.querySelector('.selected-count').textContent === '1 selected');
@@ -148,7 +165,11 @@ const storedPrompts = (sw) => sw.evaluate(async () => (await chrome.storage.loca
   await dashboard.waitForTimeout(200);
   assert.strictEqual((await storedPrompts(sw)).length, 5, 'dismiss keeps prompts');
   await dashboard.fill('.search-input', 'zzz-no-match');
-  await dashboard.waitForSelector('.empty-state');
+  await dashboard.waitForSelector('.empty-state h2:text("No matching prompts")');
+  await dashboard.getByRole('button', { name: 'Clear search' }).click();
+  await dashboard.waitForSelector('.prompt-item');
+  await sw.evaluate(() => chrome.storage.local.set({ wtpPrompts: [] }));
+  await dashboard.waitForSelector('.empty-state h2:text("No saved prompts yet")');
 
   // 12. Popup reads the real tab state.
   await page.bringToFront();
@@ -156,9 +177,89 @@ const storedPrompts = (sw) => sw.evaluate(async () => (await chrome.storage.loca
   await popup.goto(`chrome-extension://${extensionId}/popup.html`);
   await page.bringToFront();
   await popup.waitForTimeout(300);
-  assert.strictEqual(await popup.locator('#toggleSelectionBtn').textContent(), 'Enable Selection');
+  assert.strictEqual(await popup.locator('#toggleSelectionBtn').textContent(), 'Select content');
+  assert.strictEqual(await popup.locator('#toggleSelectionBtn').getAttribute('aria-pressed'), 'false');
+  await sw.evaluate(() => messageHandlers.SET_SELECTION_MODE({ enabled: true }));
+  // The popup asks about the active tab when it loads, so the page must be in front first.
+  await page.bringToFront();
+  await popup.reload();
+  await popup.waitForFunction(() => document.getElementById('toggleSelectionBtn').textContent === 'Cancel selection');
+  await page.keyboard.press('Escape');
+  await popup.close();
+
+  // 13. The capture card and picker work the same on a plain page and on hostile CSS with a modal dialog.
+  // The plain page is https, which has the Clipboard API; http pages copy through the fallback.
+  for (const pageUrl of ['https://test.local/plain.html', 'http://test.local/hostile.html']) {
+    const cardTab = await context.newPage();
+    cardTab.on('pageerror', (e) => errors.push(pageUrl + ': ' + e.message));
+    await cardTab.goto(pageUrl);
+    await cardTab.bringToFront();
+    const where = ' on ' + pageUrl;
+
+    // The picker draws, aligns, and ignores the page's fonts.
+    await sw.evaluate(() => messageHandlers.SET_SELECTION_MODE({ enabled: true }));
+    const titleCenter = await center(cardTab, '#innerTitle');
+    await cardTab.mouse.move(titleCenter.x, titleCenter.y);
+    const overlay = cardTab.locator('#websiteToPrompt_highlightOverlay');
+    await overlay.waitFor({ state: 'visible' });
+    const titleBox = await cardTab.locator('#innerTitle').boundingBox();
+    const box = await overlay.boundingBox();
+    assert.ok(Math.abs(box.x - titleBox.x) < 2 && Math.abs(box.width - titleBox.width) < 2, 'overlay aligned' + where);
+    assert.ok(await cardTab.locator('#websiteToPrompt_breadcrumbBar').isVisible(), 'path bar visible' + where);
+    const barFont = await cardTab.locator('#websiteToPrompt_breadcrumbBar').evaluate((el) => getComputedStyle(el).fontFamily);
+    assert.ok(!barFont.includes('fantasy'), 'path bar font isolated' + where);
+    await cardTab.keyboard.press('Escape');
+    assert.strictEqual(await overlay.count(), 0, 'Esc removes the picker' + where);
+
+    // Capture #inner: the card shows its Markdown, reports the save, and copies.
+    let before = (await storedPrompts(sw)).length;
+    await capture(cardTab, sw, '#innerTitle', 1);
+    const innerCard = cardTab.locator('.website-to-prompt-container', { hasText: 'Inner title' });
+    assert.strictEqual(await innerCard.locator('.website-to-prompt-markdown').textContent(), '## Inner title', 'inner markdown' + where);
+    await innerCard.locator('.wtp-card-status:text("✓ Saved")').waitFor();
+    assert.strictEqual((await storedPrompts(sw)).length, before + 1, 'inner saved' + where);
+    assert.ok(await innerCard.getByRole('button', { name: 'Open in Saved prompts' }).isEnabled(), 'open enabled after save' + where);
+    const copyButton = innerCard.getByRole('button', { name: 'Copy Markdown' });
+    assert.strictEqual(await copyButton.evaluate((el) => getComputedStyle(el).backgroundColor), 'rgb(255, 214, 10)', 'copy button styled' + where);
+    await copyButton.click();
+    await innerCard.getByRole('button', { name: 'Copied' }).waitFor();
+    if (pageUrl.startsWith('https:')) {
+      assert.strictEqual(await cardTab.evaluate(() => navigator.clipboard.readText()), '## Inner title', 'clipboard holds markdown' + where);
+    }
+
+    // A wider capture keeps the earlier Markdown unescaped and leaves out the card's buttons.
+    await capture(cardTab, sw, '#outerTail', 1);
+    const outerPrompt = (await storedPrompts(sw)).at(-1).generatedPrompt;
+    assert.strictEqual(outerPrompt, '## Inner title\n\nTail', 'nested recapture' + where + ': ' + JSON.stringify(outerPrompt));
+
+    // Restoring both cards brings back the original elements.
+    await cardTab.locator('.website-to-prompt-container', { hasText: 'Tail' }).getByRole('button', { name: 'Restore' }).click();
+    await cardTab.locator('.website-to-prompt-container', { hasText: 'Inner title' }).getByRole('button', { name: 'Restore' }).click();
+    assert.strictEqual(await cardTab.locator('#innerTitle').textContent(), 'Inner title', 'restored' + where);
+    assert.strictEqual(await cardTab.locator('.website-to-prompt-container').count(), 0, 'no cards left' + where);
+
+    // Right-to-left text reads right to left in the card.
+    await capture(cardTab, sw, '#rtl');
+    assert.ok(await cardTab.locator('.website-to-prompt-markdown').evaluate((el) => el.matches(':dir(rtl)')), 'rtl markdown' + where);
+
+    // The top-layer picker still shows when the page has a modal dialog open.
+    await cardTab.evaluate(() => document.getElementById('modal').showModal());
+    await sw.evaluate(() => messageHandlers.SET_SELECTION_MODE({ enabled: true }));
+    const dialogCenter = await center(cardTab, '#dialogText');
+    await cardTab.mouse.move(dialogCenter.x, dialogCenter.y);
+    await overlay.waitFor({ state: 'visible' });
+    const dialogTextBox = await cardTab.locator('#dialogText').boundingBox();
+    const dialogOverlayBox = await overlay.boundingBox();
+    assert.ok(Math.abs(dialogOverlayBox.y - dialogTextBox.y) < 2, 'overlay aligned in dialog' + where);
+    assert.ok(await overlay.evaluate((el) => el.getRootNode().host.matches(':popover-open')), 'picker in top layer' + where);
+    before = (await storedPrompts(sw)).length;
+    await cardTab.mouse.click(dialogCenter.x, dialogCenter.y);
+    await cardTab.locator('#modal .website-to-prompt-container .wtp-card-status:text("✓ Saved")').waitFor();
+    assert.strictEqual((await storedPrompts(sw)).at(-1).generatedPrompt, 'Dialog text', 'dialog capture' + where);
+    await cardTab.close();
+  }
 
   assert.deepStrictEqual(errors, [], 'no page or extension errors');
   console.log('ALL E2E CHECKS PASSED');
   await context.close();
-})().catch((e) => { console.error('E2E FAILED:', e.message); process.exit(1); });
+})().catch((e) => { console.error('E2E FAILED:', e.stack); process.exit(1); });
