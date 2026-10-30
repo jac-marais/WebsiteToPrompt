@@ -1,7 +1,7 @@
 {
   "name": "websitetoprompt",
   "version": "0.1.0",
-  "description": "This Chrome extension allows you to select webpage elements and convert them into Markdown. Your selections are automatically saved as prompts, which can be managed, exported, or deleted through the Prompt Management Dashboard.",
+  "description": "This Chrome extension allows you to select webpage elements and convert them into Markdown. Your selections are automatically saved as prompts, which can be copied, searched, or deleted on the Saved prompts page.",
   "private": true,
   "scripts": {
     "build": "rm -rf dist && cp -R src dist",
