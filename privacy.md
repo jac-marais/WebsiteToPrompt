@@ -37,7 +37,6 @@ We do not use or share any collected information for unrelated purposes without 
 
 We only collect:
 - **Selected Content**: The text or webpage elements you manually choose via “Selection Mode” for transformation and saving.
-- **Extension Usage Data (Analytics)**: Anonymous event data (e.g., toggling selection mode, opening the dashboard) via Google Analytics to understand extension usage and improve functionality. This data does **not** include personal identifiers.
 
 We do not automatically gather additional information such as your name, email address, or other personally identifiable data.
 
@@ -45,11 +44,10 @@ We do not automatically gather additional information such as your name, email a
 
 ## 5. Limiting Use, Disclosure, and Retention
 
-We do not sell or share your stored snippets or usage data with third parties, except:
-- **Local Storage**: Your chosen website content is stored locally in your browser. You may view or delete it at any time through our dashboard interface.  
-- **Analytics**: We send non-personal, anonymous usage information (e.g., event counts) to Google Analytics servers. This helps us understand which features are most helpful.  
+We do not sell or share your stored snippets with third parties, and the extension sends no analytics or usage data anywhere.
+- **Local Storage**: Your chosen website content is stored locally in your browser. You may view or delete it at any time through our dashboard interface.
 
-Your selected snippets remain stored until you remove them or uninstall the extension. We will retain anonymous usage data in compliance with Google Analytics policies.
+Your selected snippets remain stored until you remove them or uninstall the extension.
 
 ---
 

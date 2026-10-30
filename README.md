@@ -45,16 +45,25 @@ A free, open-source Chrome extension that helps you convert webpage content into
 
 ## How to Use
 
-1. Click the extension icon
-2. Toggle "Selection Mode"
-3. Hover over desired content and click to capture
+1. Click the extension icon and choose **Enable Selection** (or right-click the page and choose **Select content to convert**)
+2. Hover over the content you want. Scroll to step out to a parent element, and press Esc to cancel
+3. Click to capture. The element turns into its Markdown, with **Copy**, **Revert**, and **Open Dashboard** buttons
 4. Access your saved prompts through the Dashboard where you can:
    - Search by URL or content
    - Delete unwanted prompts
-   - Export selections in various formats
-   - Combine multiple snippets into single prompts
+   - Select several snippets (Shift or Cmd/Ctrl click) and copy them as one prompt, each wrapped in a `<website_section>` tag
 
 ## Technical Details
 
 - Built on [Turndown](https://github.com/domchristie/turndown) for HTML-to-Markdown conversion
 - Uses Chrome's local storage API for data persistence
+- Links and images are written with absolute URLs, and link text stays on one line
+
+## Development
+
+There is no compile step. `src/` is the complete extension.
+
+1. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and choose `src/` (or `dist/` after `npm run build`).
+2. After an edit, click the extension's reload button.
+3. `npm run build` copies `src/` to `dist/`. `npm run pack` also writes `WebsiteToPrompt.zip` for the Chrome Web Store.
+4. `npm test` loads `src/` into Playwright's Chromium inside Docker and runs `tests/e2e.js`: capture, links, revert, saves, and the dashboard.

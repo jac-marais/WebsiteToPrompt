@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <title>WebsiteToPrompt Dashboard</title>
     <style>
-      /* Main Dashboard Styles (Minor comment: you can customize these!) */
+      /* Main Dashboard Styles */
       * {
         box-sizing: border-box;
         margin: 0;
@@ -216,8 +216,32 @@
         border-color: #4f46e5;
       }
 
-      .hidden {
-        display: none;
+      .selection-controls button:disabled {
+        opacity: 0.5;
+        cursor: default;
+        background: #fff;
+        border-color: #e5e5e5;
+      }
+      .selection-controls .selected-count {
+        margin-right: auto;
+        color: #6b7280;
+        font-size: 0.875rem;
+      }
+
+      .group-count {
+        color: #6b7280;
+        font-size: 0.875rem;
+      }
+
+      .empty-state {
+        padding: 2rem 1rem;
+        color: #6b7280;
+        text-align: center;
+      }
+
+      .copy-prompt-btn {
+        margin-left: 10px;
+        padding: 0 5px;
       }
 
       .dashboard-footer {
@@ -284,7 +308,7 @@
             <button class="export-btn">Copy</button>
             <button class="delete-btn">Delete</button>
           </div>
-          <!-- Prompts will be inserted here -->
+          <div id="promptsList"></div>
         </div>
 
         <div class="panel-resizer" id="panelResizer"></div>

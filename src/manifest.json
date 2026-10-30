@@ -1,13 +1,13 @@
 {
   "name": "WebsiteToPrompt",
   "description": "Quickly capture and convert webpage content into structured Markdown for use with AI tools.",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "manifest_version": 3,
   "permissions": [
     "activeTab",
-    "storage",
-    "tabs",
-    "contextMenus"
+    "contextMenus",
+    "scripting",
+    "storage"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -25,8 +25,7 @@
     "512": "icons/android-chrome-512x512.png"
   },
   "background": {
-    "service_worker": "background.js",
-    "type": "module"
+    "service_worker": "background.js"
   },
   "content_scripts": [
     {
@@ -36,17 +35,6 @@
       "js": [
         "libs/turndown.js",
         "content-script.js"
-      ]
-    }
-  ],
-  "web_accessible_resources": [
-    {
-      "resources": [
-        "dashboard.html",
-        "dashboard.js"
-      ],
-      "matches": [
-        "<all_urls>"
       ]
     }
   ]

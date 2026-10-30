@@ -1,461 +1,380 @@
 class DashboardManager {
   constructor() {
-    // State
     this.state = {
       viewMode: 'url',
       prompts: [],
       selectedGroup: null,
-      selectedPrompts: new Set(),
+      selectedPromptIds: new Set(),
+      detailsPromptId: null,
+      lastClickedPromptId: null,
       searchQuery: '',
     };
 
-    // Cache DOM elements
     this.elements = {
       groupsPanel: document.getElementById('groupsPanel'),
       promptsPanel: document.getElementById('promptsPanel'),
+      promptsList: document.getElementById('promptsList'),
       detailsPanel: document.getElementById('detailsPanel'),
       searchInput: document.querySelector('.search-input'),
       viewButtons: document.querySelectorAll('.view-mode-btn'),
       selectionControls: document.getElementById('selectionControls'),
+      selectedCount: document.querySelector('.selected-count'),
+      selectAllBtn: document.querySelector('.select-all-btn'),
+      exportBtn: document.querySelector('.export-btn'),
+      deleteBtn: document.querySelector('.delete-btn'),
       panelResizer: document.getElementById('panelResizer'),
     };
 
     this.pendingPromptId = new URLSearchParams(window.location.search).get('promptId');
 
-    // Bind event handlers
     this.bindEvents();
-
-    // Initial load
+    this.initializeResizer();
     this.loadPrompts();
 
-    // Listen for "PROMPT_SAVED" message to reload data
-    chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-      if (request.type === 'PROMPT_SAVED') {
-        this.loadPrompts();
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName === 'local' && changes.wtpPrompts) {
+        this.setPrompts(changes.wtpPrompts.newValue || []);
       }
     });
-
-    this.initializeResizer();
   }
 
-  // Event Binding
   bindEvents() {
-    // View mode switching
     this.elements.viewButtons.forEach((btn) => {
       btn.addEventListener('click', () => this.switchView(btn.dataset.view));
     });
 
-    // Search
     this.elements.searchInput.addEventListener(
       'input',
       this.debounce((e) => this.handleSearch(e.target.value), 300)
     );
 
-    // Prompt item clicks (selection, details)
-    this.elements.promptsPanel.addEventListener('click', (e) => {
+    this.elements.promptsList.addEventListener('click', (e) => {
       const promptItem = e.target.closest('.prompt-item');
-      if (promptItem) {
-        this.handlePromptClick(promptItem, e);
-      }
+      if (promptItem) this.handlePromptClick(promptItem.dataset.id, e);
     });
 
-    // Group selection
     this.elements.groupsPanel.addEventListener('click', (e) => {
       const groupItem = e.target.closest('.group-item');
-      if (groupItem) {
-        this.selectGroup(groupItem.dataset.group);
-      }
+      if (groupItem) this.selectGroup(groupItem.dataset.group);
     });
 
-    // Selection controls (select all, export, delete)
-    const exportBtn = this.elements.promptsPanel.querySelector('.export-btn');
-    const deleteBtn = this.elements.promptsPanel.querySelector('.delete-btn');
-    const selectAllBtn = this.elements.promptsPanel.querySelector('.select-all-btn');
-
-    if (selectAllBtn) {
-      selectAllBtn.addEventListener('click', () => this.selectAllInGroup());
-    }
-    if (exportBtn) {
-      exportBtn.addEventListener('click', () => this.exportSelected());
-    }
-    if (deleteBtn) {
-      deleteBtn.addEventListener('click', () => this.deleteSelected());
-    }
+    this.elements.selectAllBtn.addEventListener('click', () => this.selectAllInGroup());
+    this.elements.exportBtn.addEventListener('click', () => this.exportSelected());
+    this.elements.deleteBtn.addEventListener('click', () => this.deleteSelected());
   }
 
-  // Data Loading
-  async loadPrompts() {
-    chrome.storage.local.get(['wtpPrompts'], (res) => {
+  loadPrompts() {
+    chrome.storage.local.get('wtpPrompts', (res) => {
       if (chrome.runtime.lastError) {
         console.error('Error retrieving wtpPrompts from storage:', chrome.runtime.lastError);
-        this.state.prompts = [];
-      } else {
-        this.state.prompts = res.wtpPrompts || [];
       }
-
-      if (this.pendingPromptId && this.selectPromptById(this.pendingPromptId)) {
-        this.pendingPromptId = null;
-        return;
-      }
-
-      this.renderDashboard();
+      this.setPrompts((res && res.wtpPrompts) || []);
     });
   }
 
-  // View Management
+  setPrompts(prompts) {
+    this.state.prompts = [...prompts].sort((a, b) => b.timestamp - a.timestamp);
+
+    const existingIds = new Set(this.state.prompts.map((prompt) => prompt.id));
+    this.state.selectedPromptIds = new Set([...this.state.selectedPromptIds].filter((id) => existingIds.has(id)));
+    if (!existingIds.has(this.state.detailsPromptId)) this.state.detailsPromptId = null;
+
+    if (this.pendingPromptId && existingIds.has(this.pendingPromptId)) {
+      this.selectPromptById(this.pendingPromptId);
+      this.pendingPromptId = null;
+      return;
+    }
+    this.render();
+  }
+
   switchView(newMode) {
     this.state.viewMode = newMode;
     this.state.selectedGroup = null;
-    this.state.selectedPrompts.clear();
-
-    // Update UI
+    this.state.selectedPromptIds.clear();
+    this.state.detailsPromptId = null;
     this.elements.viewButtons.forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.view === newMode);
     });
-
-    this.renderDashboard();
-  }
-
-  // Grouping Logic
-  groupPrompts() {
-    const grouped = {};
-
-    if (this.state.viewMode === 'all') {
-      // Sort all prompts by timestamp
-      const sortedPrompts = [...this.state.prompts].sort((a, b) => b.timestamp - a.timestamp);
-      grouped['all'] = sortedPrompts;
-    } else if (this.state.viewMode === 'url' || this.state.viewMode === 'date') {
-      this.state.prompts.forEach((prompt) => {
-        const groupKey = this.getGroupKeyForPrompt(prompt);
-        if (!grouped[groupKey]) grouped[groupKey] = [];
-        grouped[groupKey].push(prompt);
-      });
-    } else {
-      return {};
-    }
-
-    return grouped;
+    this.render();
   }
 
   getGroupKeyForPrompt(prompt) {
     if (this.state.viewMode === 'url') {
       try {
-        return new URL(prompt.sourceUrl).hostname;
+        return new URL(prompt.sourceUrl).hostname || 'unknown';
       } catch (error) {
         return 'unknown';
       }
     }
-
     if (this.state.viewMode === 'date') {
       return new Date(prompt.timestamp).toLocaleDateString();
     }
-
-    if (this.state.viewMode === 'all') {
-      return 'all';
-    }
-
-    return null;
+    return 'All prompts';
   }
 
-  // Search
+  // Prompts are sorted newest first, so groups come out ordered by their most recent prompt.
+  groupPrompts() {
+    const grouped = new Map();
+    this.filterPrompts(this.state.prompts).forEach((prompt) => {
+      const groupKey = this.getGroupKeyForPrompt(prompt);
+      if (!grouped.has(groupKey)) grouped.set(groupKey, []);
+      grouped.get(groupKey).push(prompt);
+    });
+    return grouped;
+  }
+
   handleSearch(query) {
-    this.state.searchQuery = query.toLowerCase();
-    this.renderDashboard();
+    this.state.searchQuery = query.trim().toLowerCase();
+    this.render();
   }
 
   filterPrompts(prompts) {
-    if (!this.state.searchQuery) return prompts;
-
-    return prompts.filter(
-      (prompt) =>
-        prompt.sourceUrl.toLowerCase().includes(this.state.searchQuery) ||
-        prompt.generatedPrompt.toLowerCase().includes(this.state.searchQuery) ||
-        prompt.elementContent.toLowerCase().includes(this.state.searchQuery)
+    const query = this.state.searchQuery;
+    if (!query) return prompts;
+    return prompts.filter((prompt) =>
+      [prompt.sourceUrl, prompt.generatedPrompt, prompt.elementContent].some((field) =>
+        (field || '').toLowerCase().includes(query)
+      )
     );
   }
 
-  // Selection
-  handlePromptClick(promptElement, event) {
-    const promptId = promptElement.dataset.id;
+  getVisiblePrompts() {
+    return this.groupPrompts().get(this.state.selectedGroup) || [];
+  }
 
-    if (event.shiftKey && this.lastSelectedPrompt) {
-      // Range selection
-      const allItems = Array.from(this.elements.promptsPanel.querySelectorAll('.prompt-item'));
-      const start = allItems.indexOf(this.lastSelectedPrompt);
-      const end = allItems.indexOf(promptElement);
-      const range = allItems.slice(Math.min(start, end), Math.max(start, end) + 1);
+  handlePromptClick(promptId, event) {
+    const selectedIds = this.state.selectedPromptIds;
+    const visibleIds = this.getVisiblePrompts().map((prompt) => prompt.id);
+    const anchorIndex = visibleIds.indexOf(this.state.lastClickedPromptId);
 
-      range.forEach((item) => {
-        this.state.selectedPrompts.add(item.dataset.id);
-        item.classList.add('selected');
-      });
+    if (event.shiftKey && anchorIndex !== -1) {
+      const clickedIndex = visibleIds.indexOf(promptId);
+      visibleIds
+        .slice(Math.min(anchorIndex, clickedIndex), Math.max(anchorIndex, clickedIndex) + 1)
+        .forEach((id) => selectedIds.add(id));
     } else if (event.ctrlKey || event.metaKey) {
-      // Toggle selection
-      if (this.state.selectedPrompts.has(promptId)) {
-        this.state.selectedPrompts.delete(promptId);
-        promptElement.classList.remove('selected');
+      if (selectedIds.has(promptId)) {
+        selectedIds.delete(promptId);
       } else {
-        this.state.selectedPrompts.add(promptId);
-        promptElement.classList.add('selected');
+        selectedIds.add(promptId);
       }
     } else {
-      // Single selection
-      this.state.selectedPrompts.clear();
-      this.elements.promptsPanel.querySelectorAll('.prompt-item').forEach((item) => {
-        item.classList.remove('selected');
-      });
-      this.state.selectedPrompts.add(promptId);
-      promptElement.classList.add('selected');
+      selectedIds.clear();
+      selectedIds.add(promptId);
     }
 
-    this.lastSelectedPrompt = promptElement;
-    this.updateSelectionControls();
-    this.showDetails(promptId);
+    this.state.lastClickedPromptId = promptId;
+    this.state.detailsPromptId = promptId;
+    this.render();
   }
 
-  selectGroup(groupId) {
-    this.state.selectedGroup = groupId;
-    this.state.selectedPrompts.clear();
-    this.renderPromptsList();
+  selectGroup(groupKey) {
+    this.state.selectedGroup = groupKey;
+    this.state.selectedPromptIds.clear();
+    this.state.detailsPromptId = null;
+    this.state.lastClickedPromptId = null;
+    this.render();
   }
 
-  // Provide a helper to select all in the current group
   selectAllInGroup() {
-    if (!this.state.selectedGroup) return;
-    const grouped = this.groupPrompts();
-    const promptsInGroup = grouped[this.state.selectedGroup] || [];
-    const filtered = this.filterPrompts(promptsInGroup);
-
-    filtered.forEach((prompt) => {
-      this.state.selectedPrompts.add(prompt.id);
-    });
-
-    this.renderPromptsList();
-    this.updateSelectionControls();
-  }
-
-  // Details Display
-  showDetails(promptId) {
-    const prompt = this.state.prompts.find((p) => p.id === promptId);
-    if (!prompt) return;
-
-    const details = `
-        <div class="details-section">
-            <div>${new Date(prompt.timestamp).toLocaleString()}</div>
-        </div>
-  
-        <div class="details-section">
-            <h3>Source</h3>
-            <a href="${prompt.sourceUrl}" target="_blank" rel="noopener noreferrer">${
-      prompt.sourceUrl
-    }</a>
-        </div>
-  
-        <div class="details-section">
-            <h3>Prompt <button class="copy-prompt-btn" style="margin-left: 10px; padding: 0px 5px;" data-prompt="${this.escapeHtml(
-              prompt.generatedPrompt
-            )}">Copy</button></h3>
-            <div class="details-content whitespace-pre-wrap">${this.escapeHtml(
-              prompt.generatedPrompt
-            )}</div>
-        </div>
-      `;
-
-    this.elements.detailsPanel.innerHTML = details;
-
-    // Add click handler for the copy button
-    const copyBtn = this.elements.detailsPanel.querySelector('.copy-prompt-btn');
-    copyBtn.addEventListener('click', () => {
-      navigator.clipboard
-        .writeText(prompt.generatedPrompt)
-        .then(() => {
-          copyBtn.textContent = 'Copied!';
-          setTimeout(() => {
-            copyBtn.textContent = 'Copy';
-          }, 2000);
-        })
-        .catch((err) => console.error('Failed to copy:', err));
-    });
-  }
-
-  // Selection Controls
-  updateSelectionControls() {
-    const count = this.state.selectedPrompts.size;
-    if (count > 0) {
-      this.elements.selectionControls.classList.add('active');
-      this.elements.selectionControls.querySelector('.selected-count').textContent = `${count} selected`;
-    } else {
-      this.elements.selectionControls.classList.remove('active');
-    }
-  }
-
-  // Rendering
-  renderDashboard() {
-    const grouped = this.groupPrompts();
-
-    // Auto-select first group if none selected
-    if (!this.state.selectedGroup && Object.keys(grouped).length > 0) {
-      const firstGroup = Object.keys(grouped)[0];
-      this.state.selectedGroup = firstGroup;
-
-      const firstPrompt = grouped[firstGroup][0];
-      if (firstPrompt) {
-        this.state.selectedPrompts.clear();
-        this.state.selectedPrompts.add(firstPrompt.id);
-        setTimeout(() => {
-          this.showDetails(firstPrompt.id);
-          this.updateSelectionControls();
-        }, 50);
-      }
-    }
-
-    this.renderGroupsList(grouped);
-    this.renderPromptsList();
-  }
-
-  renderGroupsList(grouped) {
-    const fragment = document.createDocumentFragment();
-
-    Object.entries(grouped).forEach(([group, prompts]) => {
-      // Filter prompts by search
-      const filtered = this.filterPrompts(prompts);
-      if (filtered.length === 0) return;
-
-      const element = document.createElement('div');
-      element.className = 'group-item';
-      element.dataset.group = group;
-      if (group === this.state.selectedGroup) {
-        element.classList.add('selected');
-      }
-
-      element.innerHTML = `
-          ${this.escapeHtml(group)}
-          <span class="text-gray-500 text-sm">(${filtered.length})</span>
-        `;
-      fragment.appendChild(element);
-    });
-
-    this.elements.groupsPanel.innerHTML = '';
-    this.elements.groupsPanel.appendChild(fragment);
-  }
-
-  renderPromptsList() {
-    const fragment = document.createDocumentFragment();
-    const grouped = this.groupPrompts();
-
-    // Keep reference so we can reattach after clearing
-    const selectionControls = this.elements.selectionControls;
-
-    // Clear the prompts panel
-    this.elements.promptsPanel.innerHTML = '';
-
-    // Re-append the selection controls at the top
-    this.elements.promptsPanel.appendChild(selectionControls);
-    selectionControls.classList.remove('active');
-
-    if (this.state.selectedGroup && grouped[this.state.selectedGroup]) {
-      const prompts = this.filterPrompts(grouped[this.state.selectedGroup]);
-      prompts.forEach((prompt) => {
-        const element = document.createElement('div');
-        element.className = 'prompt-item';
-        element.dataset.id = prompt.id;
-
-        if (this.state.selectedPrompts.has(prompt.id)) {
-          element.classList.add('selected');
-        }
-
-        element.innerHTML = `
-            <div class="prompt-meta">${new Date(prompt.timestamp).toLocaleString()}</div>
-            <div class="prompt-content">${this.escapeHtml(prompt.generatedPrompt)}</div>
-          `;
-
-        fragment.appendChild(element);
-      });
-    }
-
-    this.elements.promptsPanel.appendChild(fragment);
-  }
-
-  // Utility Functions
-  debounce(func, wait) {
-    let timeout;
-    return function executedFunction(...args) {
-      const later = () => {
-        clearTimeout(timeout);
-        func(...args);
-      };
-      clearTimeout(timeout);
-      timeout = setTimeout(later, wait);
-    };
-  }
-
-  escapeHtml(unsafe) {
-    return unsafe
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
-  }
-
-  // Export selected prompts
-  exportSelected() {
-    try {
-      const selectedPrompts = this.state.prompts.filter((p) => this.state.selectedPrompts.has(p.id));
-      if (selectedPrompts.length === 0) return;
-
-      const markdownWithXml = selectedPrompts
-        .map((p) => `<website_section name="${p.sourceUrl}">\n${p.generatedPrompt}\n</website_section>`)
-        .join('\n\n');
-
-      navigator.clipboard
-        .writeText(markdownWithXml)
-        .then(() => {
-          console.log('Exported to clipboard');
-        })
-        .catch((err) => {
-          console.error('Export failed:', err);
-        });
-    } catch (error) {
-      console.error('Export error:', error);
-    }
-  }
-
-  // Delete selected prompts
-  async deleteSelected() {
-    try {
-      const selectedIds = Array.from(this.state.selectedPrompts);
-      this.state.prompts = this.state.prompts.filter((p) => !selectedIds.includes(p.id));
-
-      chrome.storage.local.set({ wtpPrompts: this.state.prompts }, () => {
-        if (chrome.runtime.lastError) {
-          console.error('Failed to remove selected prompts:', chrome.runtime.lastError);
-        }
-      });
-
-      this.state.selectedPrompts.clear();
-      this.renderDashboard();
-    } catch (error) {
-      console.error('Delete error:', error);
-    }
+    this.getVisiblePrompts().forEach((prompt) => this.state.selectedPromptIds.add(prompt.id));
+    this.render();
   }
 
   selectPromptById(promptId) {
     const prompt = this.state.prompts.find((item) => item.id === promptId);
-    if (!prompt) return false;
+    if (!prompt) return;
+    this.state.searchQuery = '';
+    this.elements.searchInput.value = '';
+    this.state.selectedGroup = this.getGroupKeyForPrompt(prompt);
+    this.state.selectedPromptIds = new Set([promptId]);
+    this.state.detailsPromptId = promptId;
+    this.state.lastClickedPromptId = promptId;
+    this.render();
+  }
 
-    const groupKey = this.getGroupKeyForPrompt(prompt);
-    if (!groupKey) return false;
+  render() {
+    const grouped = this.groupPrompts();
 
-    this.state.selectedGroup = groupKey;
-    this.state.selectedPrompts.clear();
-    this.state.selectedPrompts.add(promptId);
+    // Fall back to the newest group and prompt when the current choice was deleted or filtered out.
+    if (!grouped.has(this.state.selectedGroup)) {
+      this.state.selectedGroup = grouped.keys().next().value ?? null;
+      this.state.selectedPromptIds.clear();
+      this.state.detailsPromptId = null;
+    }
+    const visiblePrompts = grouped.get(this.state.selectedGroup) || [];
+    // Copy and Delete must only act on prompts the user can see.
+    const visibleIds = new Set(visiblePrompts.map((prompt) => prompt.id));
+    this.state.selectedPromptIds = new Set([...this.state.selectedPromptIds].filter((id) => visibleIds.has(id)));
+    if (!visibleIds.has(this.state.detailsPromptId)) this.state.detailsPromptId = null;
+    if (!this.state.detailsPromptId && visiblePrompts.length > 0) {
+      this.state.detailsPromptId = visiblePrompts[0].id;
+      this.state.selectedPromptIds.add(visiblePrompts[0].id);
+    }
 
-    this.renderDashboard();
-    this.showDetails(promptId);
-    this.updateSelectionControls();
+    this.renderGroupsList(grouped);
+    this.renderPromptsList(visiblePrompts);
+    this.renderSelectionControls(visiblePrompts);
+    this.renderDetails();
+  }
 
-    return true;
+  renderGroupsList(grouped) {
+    this.elements.groupsPanel.replaceChildren(
+      ...[...grouped].map(([groupKey, prompts]) => {
+        const element = document.createElement('div');
+        element.className = 'group-item';
+        element.classList.toggle('selected', groupKey === this.state.selectedGroup);
+        element.dataset.group = groupKey;
+        element.textContent = groupKey + ' ';
+
+        const count = document.createElement('span');
+        count.className = 'group-count';
+        count.textContent = `(${prompts.length})`;
+        element.appendChild(count);
+        return element;
+      })
+    );
+  }
+
+  renderPromptsList(visiblePrompts) {
+    if (visiblePrompts.length === 0) {
+      const emptyState = document.createElement('div');
+      emptyState.className = 'empty-state';
+      emptyState.textContent = this.state.searchQuery
+        ? 'No prompts match your search.'
+        : 'No prompts yet. Open the extension popup, click Enable Selection, then click any part of a page.';
+      this.elements.promptsList.replaceChildren(emptyState);
+      return;
+    }
+
+    this.elements.promptsList.replaceChildren(
+      ...visiblePrompts.map((prompt) => {
+        const element = document.createElement('div');
+        element.className = 'prompt-item';
+        element.classList.toggle('selected', this.state.selectedPromptIds.has(prompt.id));
+        element.dataset.id = prompt.id;
+
+        const meta = document.createElement('div');
+        meta.className = 'prompt-meta';
+        meta.textContent = new Date(prompt.timestamp).toLocaleString();
+
+        const content = document.createElement('div');
+        content.className = 'prompt-content';
+        content.textContent = prompt.generatedPrompt;
+
+        element.append(meta, content);
+        return element;
+      })
+    );
+  }
+
+  renderSelectionControls(visiblePrompts) {
+    const count = this.state.selectedPromptIds.size;
+    this.elements.selectionControls.classList.toggle('active', visiblePrompts.length > 0);
+    this.elements.selectedCount.textContent = `${count} selected`;
+    this.elements.exportBtn.disabled = count === 0;
+    this.elements.deleteBtn.disabled = count === 0;
+  }
+
+  renderDetails() {
+    const prompt = this.state.prompts.find((p) => p.id === this.state.detailsPromptId);
+    if (!prompt) {
+      this.elements.detailsPanel.replaceChildren();
+      return;
+    }
+
+    const timestampSection = this.createDetailsSection();
+    timestampSection.textContent = new Date(prompt.timestamp).toLocaleString();
+
+    const sourceSection = this.createDetailsSection('Source');
+    const sourceLink = document.createElement('a');
+    sourceLink.href = /^https?:/i.test(prompt.sourceUrl) ? prompt.sourceUrl : '#';
+    sourceLink.target = '_blank';
+    sourceLink.rel = 'noopener noreferrer';
+    sourceLink.textContent = prompt.sourceUrl;
+    sourceSection.appendChild(sourceLink);
+
+    const promptSection = this.createDetailsSection('Prompt');
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'copy-prompt-btn';
+    copyBtn.textContent = 'Copy';
+    copyBtn.addEventListener('click', () => this.copyWithFeedback(copyBtn, prompt.generatedPrompt));
+    promptSection.querySelector('h3').appendChild(copyBtn);
+
+    const content = document.createElement('div');
+    content.className = 'details-content';
+    content.textContent = prompt.generatedPrompt;
+    promptSection.appendChild(content);
+
+    this.elements.detailsPanel.replaceChildren(timestampSection, sourceSection, promptSection);
+  }
+
+  createDetailsSection(heading) {
+    const section = document.createElement('div');
+    section.className = 'details-section';
+    if (heading) {
+      const h3 = document.createElement('h3');
+      h3.textContent = heading;
+      section.appendChild(h3);
+    }
+    return section;
+  }
+
+  flashButtonText(button, text) {
+    const originalText = button.dataset.label || button.textContent;
+    button.dataset.label = originalText;
+    button.textContent = text;
+    clearTimeout(button.flashTimeout);
+    button.flashTimeout = setTimeout(() => {
+      button.textContent = originalText;
+    }, 2000);
+  }
+
+  copyWithFeedback(button, text) {
+    navigator.clipboard
+      .writeText(text)
+      .then(() => this.flashButtonText(button, 'Copied!'))
+      .catch((error) => {
+        console.error('Copy failed:', error);
+        this.flashButtonText(button, 'Copy failed');
+      });
+  }
+
+  getSelectedPrompts() {
+    return this.state.prompts.filter((p) => this.state.selectedPromptIds.has(p.id));
+  }
+
+  exportSelected() {
+    const selectedPrompts = this.getSelectedPrompts();
+    if (selectedPrompts.length === 0) return;
+
+    const markdownWithXml = selectedPrompts
+      .map((p) => `<website_section name="${p.sourceUrl.replace(/"/g, '&quot;')}">\n${p.generatedPrompt}\n</website_section>`)
+      .join('\n\n');
+    this.copyWithFeedback(this.elements.exportBtn, markdownWithXml);
+  }
+
+  deleteSelected() {
+    const promptIds = [...this.state.selectedPromptIds];
+    if (promptIds.length === 0) return;
+    const noun = promptIds.length === 1 ? 'prompt' : 'prompts';
+    if (!confirm(`Delete ${promptIds.length} ${noun}? This cannot be undone.`)) return;
+
+    // The background worker owns all storage writes; the storage listener re-renders once it lands.
+    chrome.runtime.sendMessage({ type: 'DELETE_PROMPTS', promptIds }, (response) => {
+      if (!response || !response.ok) {
+        console.error('Failed to delete prompts:', chrome.runtime.lastError || response);
+        this.flashButtonText(this.elements.deleteBtn, 'Delete failed');
+      }
+    });
+  }
+
+  debounce(func, wait) {
+    let timeout;
+    return (...args) => {
+      clearTimeout(timeout);
+      timeout = setTimeout(() => func(...args), wait);
+    };
   }
 
   initializeResizer() {
@@ -463,71 +382,33 @@ class DashboardManager {
     let startX;
     let startWidth;
 
-    const startResize = (e) => {
+    this.elements.panelResizer.addEventListener('mousedown', (e) => {
       isResizing = true;
       startX = e.pageX;
       startWidth = this.elements.promptsPanel.offsetWidth;
       this.elements.panelResizer.classList.add('active');
       document.body.style.cursor = 'col-resize';
       document.body.style.userSelect = 'none';
-    };
+    });
 
-    const resize = (e) => {
+    document.addEventListener('mousemove', (e) => {
       if (!isResizing) return;
-      const diff = e.pageX - startX;
-      const newWidth = Math.max(200, startWidth + diff); // set a min 200px
+      const newWidth = Math.max(200, startWidth + e.pageX - startX);
       this.elements.promptsPanel.style.width = `${newWidth}px`;
-    };
+    });
 
     const stopResize = () => {
+      if (!isResizing) return;
       isResizing = false;
       this.elements.panelResizer.classList.remove('active');
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
     };
-
-    this.elements.panelResizer.addEventListener('mousedown', startResize);
-    document.addEventListener('mousemove', resize);
     document.addEventListener('mouseup', stopResize);
     document.addEventListener('mouseleave', stopResize);
   }
 }
 
-// Initialize the dashboard when the DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
-  try {
-    // Create and initialize the dashboard manager
-    const dashboard = new DashboardManager();
-
-    // Add error handler for unexpected errors
-    window.addEventListener('error', (event) => {
-      console.error('Dashboard error:', event.error);
-    });
-
-    // Export the dashboard instance for debugging
-    window.dashboardManager = dashboard;
-  } catch (error) {
-    console.error('Dashboard initialization failed:', error);
-  }
-});
-
-document.addEventListener('DOMContentLoaded', function () {
-  const exportBtn = document.querySelector('.export-btn');
-  const selectAllBtn = document.querySelector('.select-all-btn');
-  const deleteBtn = document.querySelector('.delete-btn');
-
-  function addFeedback(button, feedbackText, originalText) {
-    button.addEventListener('click', function () {
-      // Change the button text to provide feedback
-      button.textContent = feedbackText;
-      // Revert the text back after 2 seconds
-      setTimeout(() => {
-        button.textContent = originalText;
-      }, 2000);
-    });
-  }
-
-  addFeedback(exportBtn, 'Copied!', 'Copy');
-  addFeedback(selectAllBtn, 'Selected All!', 'Select All');
-  addFeedback(deleteBtn, 'Deleted!', 'Delete');
+  window.dashboardManager = new DashboardManager();
 });

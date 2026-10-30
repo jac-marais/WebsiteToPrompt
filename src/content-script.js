@@ -1,7 +1,5 @@
 (function () {
   // This content script handles selection highlighting and element transformations.
-  console.log('WebsiteToPrompt content script loaded.');
-
   let selectionMode = false;
   let highlightOverlay = null;
   let elementStack = [];
@@ -13,8 +11,12 @@
   let lockOriginX = 0;
   let lockOriginY = 0;
   let accumulatedDelta = 0;
+  let stylesInjected = false;
 
-  const SKIP_TAGS = new Set(['HTML', 'HEAD', 'SCRIPT', 'STYLE', 'LINK', 'META', 'NOSCRIPT', 'BR']);
+  // Original elements are kept so Revert restores the live node with its event listeners.
+  const originalElementByContainer = new WeakMap();
+
+  const SKIP_TAGS = new Set(['HTML', 'HEAD', 'SCRIPT', 'STYLE', 'LINK', 'META', 'NOSCRIPT', 'BR', 'BODY']);
 
   const turndownService = new TurndownService({
     headingStyle: 'atx',
@@ -25,6 +27,13 @@
     linkStyle: 'inlined',
     linkReferenceStyle: 'full',
     preformattedCode: true,
+  });
+
+  turndownService.remove(['script', 'style', 'noscript', 'template']);
+
+  // A selection that contains an earlier capture must not include that capture's buttons.
+  turndownService.remove(function (node) {
+    return node.classList && node.classList.contains('website-to-prompt-controls');
   });
 
   // --- Table conversion rules ---
@@ -98,40 +107,80 @@
     }
   });
 
-  function htmlToMarkdown(html) {
-    // remove script tags
-    html = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+  // --- Link rule ---
 
-    // remove style tags
-    html = html.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '');
-
-    const markdown = turndownService.turndown(html).trim();
-    return markdown.replace(/\n{3,}/g, '\n\n').trim();
+  // Card-style links wrap headings and paragraphs, so flatten their Markdown onto one line.
+  function flattenLinkText(markdown) {
+    return markdown
+      .split('\n')
+      .map(function (line) { return line.replace(/^#{1,6}\s+/, '').trim(); })
+      .filter(Boolean)
+      .join(' ');
   }
 
-  // Inject minimal CSS for highlighting
-  injectStyles();
+  function toAbsoluteUrl(href) {
+    try {
+      return new URL(href, document.baseURI).href;
+    } catch (error) {
+      return href;
+    }
+  }
+
+  turndownService.addRule('inlineLink', {
+    filter: function (node) {
+      return node.nodeName === 'A' && node.getAttribute('href');
+    },
+    replacement: function (content, node) {
+      var text = flattenLinkText(content);
+      var href = node.getAttribute('href').trim();
+      if (!text) return '';
+      if (/^javascript:/i.test(href)) return text;
+      var url = toAbsoluteUrl(href).replace(/([()])/g, '\\$1');
+      var title = (node.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
+      var titlePart = title ? ' "' + title.replace(/"/g, '\\"') + '"' : '';
+      return '[' + text + '](' + url + titlePart + ')';
+    }
+  });
+
+  turndownService.addRule('image', {
+    filter: 'img',
+    replacement: function (content, node) {
+      var src = (node.getAttribute('src') || '').trim();
+      var alt = (node.getAttribute('alt') || '').replace(/\s+/g, ' ').trim();
+      // Inline data URIs can be megabytes of base64, which would swamp the prompt.
+      if (!src || /^data:/i.test(src)) return alt;
+      return '![' + alt + '](' + toAbsoluteUrl(src).replace(/([()])/g, '\\$1') + ')';
+    }
+  });
+
+  function htmlToMarkdown(element) {
+    // The HTML string keeps the element's own tag and parses in an inert document.
+    return turndownService.turndown(element.outerHTML).replace(/\n{3,}/g, '\n\n').trim();
+  }
 
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    // 1) Toggle selection mode
-    if (request.type === 'TOGGLE_SELECTION_MODE') {
-      selectionMode = request.enabled;
-      if (selectionMode) {
+    if (request.type === 'GET_SELECTION_MODE') {
+      sendResponse({ enabled: selectionMode });
+    } else if (request.type === 'SET_SELECTION_MODE') {
+      if (request.enabled) {
         enableSelectionMode();
       } else {
         disableSelectionMode();
       }
-      sendResponse({ status: 'selectionModeUpdated', enabled: selectionMode });
+      sendResponse({ enabled: selectionMode });
     }
   });
 
   // --- Element stack helpers ---
 
+  function isExtensionElement(el) {
+    if (el.getAttribute && el.getAttribute('data-wtp-internal') === 'true') return true;
+    return Boolean(el.closest && el.closest('.website-to-prompt-container'));
+  }
+
   function filterElementStack(rawElements) {
     return rawElements.filter(function (el) {
-      if (el.getAttribute && el.getAttribute('data-wtp-internal') === 'true') return false;
-      if (el.id && el.id.startsWith('websiteToPrompt_')) return false;
-      if (el.classList && el.classList.contains('website-to-prompt-container')) return false;
+      if (isExtensionElement(el)) return false;
       if (SKIP_TAGS.has(el.tagName)) return false;
       var rect = el.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) return false;
@@ -140,8 +189,7 @@
   }
 
   function rebuildElementStack(x, y) {
-    var raw = document.elementsFromPoint(x, y);
-    elementStack = filterElementStack(raw);
+    elementStack = filterElementStack(document.elementsFromPoint(x, y));
   }
 
   function getShortDescriptor(el) {
@@ -155,58 +203,55 @@
   }
 
   function updateHighlight() {
-    if (elementStack.length === 0 || !elementStack[currentDepthIndex]) {
-      if (highlightOverlay) highlightOverlay.style.display = 'none';
-      if (breadcrumbBar) breadcrumbBar.style.display = 'none';
+    var el = elementStack[currentDepthIndex];
+    if (!el) {
+      highlightOverlay.style.display = 'none';
+      breadcrumbBar.style.display = 'none';
       return;
     }
-    var el = elementStack[currentDepthIndex];
     var rect = el.getBoundingClientRect();
 
     highlightOverlay.style.display = 'block';
     highlightOverlay.style.width = rect.width + 'px';
     highlightOverlay.style.height = rect.height + 'px';
-    highlightOverlay.style.top = (rect.top + window.scrollY) + 'px';
-    highlightOverlay.style.left = (rect.left + window.scrollX) + 'px';
+    highlightOverlay.style.top = rect.top + 'px';
+    highlightOverlay.style.left = rect.left + 'px';
 
-    updateBreadcrumb();
+    updateBreadcrumb(el);
   }
 
-  function updateBreadcrumb() {
-    if (!breadcrumbBar) return;
-    var el = elementStack[currentDepthIndex];
-    if (!el) return;
+  function appendStyledText(parent, text, cssText) {
+    var span = document.createElement('span');
+    span.style.cssText = cssText;
+    span.textContent = text;
+    parent.appendChild(span);
+  }
 
-    var descriptor = getShortDescriptor(el);
+  function updateBreadcrumb(el) {
     var ancestors = [];
     var current = el.parentElement;
-    var depth = 0;
-    while (current && current !== document.documentElement && depth < 4) {
+    while (current && current !== document.documentElement && ancestors.length < 4) {
       ancestors.unshift(getShortDescriptor(current));
       current = current.parentElement;
-      depth++;
     }
 
-    var path = ancestors
-      .map(function (a) { return '<span style="color:#aaa">' + a + '</span>'; })
-      .concat(['<span style="color:#87CEEB;font-weight:bold">' + descriptor + '</span>'])
-      .join(' <span style="color:#555"> &rsaquo; </span> ');
-
-    var counter = '<span style="color:#ffd700;margin-right:12px">[' +
-      (currentDepthIndex + 1) + '/' + elementStack.length + ']</span>';
-
-    var hint = currentDepthIndex === 0
-      ? '<span style="color:#666;margin-left:12px;font-size:11px">scroll to cycle layers</span>'
-      : '';
-
-    breadcrumbBar.innerHTML = counter + path + hint;
+    // Built with textContent because ids and class names come from the page.
+    breadcrumbBar.replaceChildren();
+    appendStyledText(breadcrumbBar, '[' + (currentDepthIndex + 1) + '/' + elementStack.length + ']', 'color:#ffd700;margin-right:12px');
+    ancestors.forEach(function (ancestor) {
+      appendStyledText(breadcrumbBar, ancestor, 'color:#aaa');
+      appendStyledText(breadcrumbBar, ' › ', 'color:#555');
+    });
+    appendStyledText(breadcrumbBar, getShortDescriptor(el), 'color:#87CEEB;font-weight:bold');
+    appendStyledText(breadcrumbBar, 'scroll to pick a parent · click to capture · Esc to cancel', 'color:#888;margin-left:12px;font-size:11px');
     breadcrumbBar.style.display = 'block';
   }
 
   // --- Selection Mode helpers ---
 
   function enableSelectionMode() {
-    console.log('Enabling selection mode...');
+    if (selectionMode) return;
+    selectionMode = true;
     document.addEventListener('mousemove', handleMouseMove, true);
     document.addEventListener('wheel', handleWheel, { capture: true, passive: false });
     document.addEventListener('click', handleClick, true);
@@ -216,7 +261,8 @@
   }
 
   function disableSelectionMode() {
-    console.log('Disabling selection mode...');
+    if (!selectionMode) return;
+    selectionMode = false;
     document.removeEventListener('mousemove', handleMouseMove, true);
     document.removeEventListener('wheel', handleWheel, true);
     document.removeEventListener('click', handleClick, true);
@@ -268,164 +314,111 @@
   }
 
   function handleClick(e) {
-    if (!selectionMode) return;
-
     e.preventDefault();
     e.stopPropagation();
 
     var selectedElement = elementStack[currentDepthIndex];
-    if (selectedElement && selectedElement.isConnected) {
-      transformElement(selectedElement);
+    try {
+      if (selectedElement && selectedElement.isConnected) {
+        transformElement(selectedElement);
+      }
+    } finally {
+      disableSelectionMode();
     }
-
-    disableSelectionMode();
-    selectionMode = false;
   }
 
   function handleKeyDown(e) {
     if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
       disableSelectionMode();
-      selectionMode = false;
     }
   }
 
-  /**
-   * Convert the clicked element to Markdown, store original HTML, and replace in DOM.
-   * Also auto-save the data to local storage.
-   */
-  function transformElement(element) {
-    const originalHTML = element.outerHTML;
-    const selectorPath = getElementSelectorPath(element);
-    const uniqueId = window.location.pathname + '//' + selectorPath;
+  function flashButton(button, label, backgroundColor) {
+    button.textContent = label;
+    button.style.backgroundColor = backgroundColor;
+    setTimeout(() => {
+      button.textContent = button.dataset.label;
+      button.style.backgroundColor = '#fff';
+    }, 1500);
+  }
 
-    // Convert using Turndown
-    const markdown = htmlToMarkdown(originalHTML);
-
-    // Save originalHTML in localStorage for revert functionality
-    localStorage.setItem(uniqueId, originalHTML);
-
-    const promptId = Date.now() + '_' + Math.random().toString(36).slice(2);
-
-    // NEW: auto-save prompt data to chrome.storage.local
-    autoSavePrompt({
-      id: promptId,
-      url: window.location.href,
-      elementPath: selectorPath,
-      elementHtml: originalHTML,
-      generatedPrompt: markdown,
-    });
-
-    // Create container to display the Markdown
-    const container = document.createElement('div');
-    container.className = 'website-to-prompt-container';
-    container.setAttribute('data-wtp-id', uniqueId);
-    // container.setAttribute('contenteditable', 'true');
-    container.textContent = markdown;
-
-    // Add the control buttons (Copy, Revert, Open Dashboard)
-    const controls = document.createElement('div');
-    controls.className = 'website-to-prompt-controls';
-    // controls.setAttribute('contenteditable', 'false');
-    controls.style.cursor = 'default';
-
-    const copyBtn = document.createElement('button');
-    copyBtn.textContent = 'Copy';
-    styleButton(copyBtn);
-    copyBtn.addEventListener('click', () => {
-      navigator.clipboard
-        .writeText(markdown)
-        .then(() => {
-          const originalText = copyBtn.textContent;
-          copyBtn.textContent = 'Copied!';
-          copyBtn.style.backgroundColor = '#e6ffe6';
-          setTimeout(() => {
-            copyBtn.textContent = originalText;
-            copyBtn.style.backgroundColor = '#fff';
-          }, 1500);
-        })
-        .catch((err) => {
-          console.warn('Copy failed', err);
-          copyBtn.textContent = 'Copy failed';
-          copyBtn.style.backgroundColor = '#ffe6e6';
-          setTimeout(() => {
-            copyBtn.textContent = 'Copy';
-            copyBtn.style.backgroundColor = '#fff';
-          }, 1500);
-        });
-    });
-
-    const revertBtn = document.createElement('button');
-    revertBtn.textContent = 'Revert';
-    styleButton(revertBtn);
-    revertBtn.addEventListener('click', () => {
-      revertBtn.textContent = 'Reverting...';
-      revertBtn.style.backgroundColor = '#fff3e6';
-      setTimeout(() => {
-        revertElement(container);
-      }, 300);
-    });
-
-    // Add new Dashboard button
-    const dashboardBtn = document.createElement('button');
-    dashboardBtn.textContent = 'Open Dashboard';
-    styleButton(dashboardBtn);
-    dashboardBtn.addEventListener('click', (e) => {
+  function createControlButton(label, onClick) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = label;
+    button.dataset.label = label;
+    styleButton(button);
+    button.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      chrome.runtime.sendMessage({ type: 'openDashboard', promptId: promptId });
+      onClick(button);
     });
-
-    controls.appendChild(copyBtn);
-    controls.appendChild(revertBtn);
-    controls.appendChild(dashboardBtn);
-    container.appendChild(controls);
-
-    // Replace original element with the new container
-    element.parentNode.replaceChild(container, element);
+    return button;
   }
 
   /**
-   * Auto-save the selected element data to chrome.storage.local,
-   * using an enhanced data model. After saving, notify the Dashboard.
+   * Convert the clicked element to Markdown, save it as a prompt, and show the Markdown in its place.
    */
-  function autoSavePrompt({ id, url, elementPath, elementHtml, generatedPrompt }) {
-    const record = {
-      id,
+  function transformElement(element) {
+    const markdown = htmlToMarkdown(element);
+    const promptId = Date.now() + '_' + Math.random().toString(36).slice(2);
+
+    savePrompt({
+      id: promptId,
       timestamp: Date.now(),
-      sourceUrl: url,
-      elementPath,
-      elementContent: elementHtml,
-      generatedPrompt,
+      sourceUrl: window.location.href,
+      elementPath: getElementSelectorPath(element),
+      elementContent: element.outerHTML,
+      generatedPrompt: markdown,
       tags: [],
-    };
+    });
 
-    chrome.storage.local.get(['wtpPrompts'], (res) => {
-      let allPrompts = res.wtpPrompts || [];
-      allPrompts.push(record);
-      chrome.storage.local.set({ wtpPrompts: allPrompts }, () => {
-        if (chrome.runtime.lastError) {
-          console.error('Error saving prompt data:', chrome.runtime.lastError);
-        } else {
-          console.log('Prompt auto-saved:', record);
-          // Notify the dashboard so it can reload immediately
-          chrome.runtime.sendMessage({ type: 'PROMPT_SAVED' });
-        }
-      });
+    injectStyles();
+    const container = document.createElement('div');
+    container.className = 'website-to-prompt-container';
+
+    const markdownText = document.createElement('div');
+    markdownText.className = 'website-to-prompt-markdown';
+    markdownText.textContent = markdown;
+
+    const controls = document.createElement('div');
+    controls.className = 'website-to-prompt-controls';
+    controls.appendChild(createControlButton('Copy', (button) => {
+      navigator.clipboard
+        .writeText(markdown)
+        .then(() => flashButton(button, 'Copied!', '#e6ffe6'))
+        .catch((error) => {
+          console.warn('WebsiteToPrompt: copy failed', error);
+          flashButton(button, 'Copy failed', '#ffe6e6');
+        });
+    }));
+    controls.appendChild(createControlButton('Revert', () => revertElement(container)));
+    controls.appendChild(createControlButton('Open Dashboard', () => {
+      chrome.runtime.sendMessage({ type: 'OPEN_DASHBOARD', promptId });
+    }));
+
+    container.appendChild(controls);
+    container.appendChild(markdownText);
+
+    originalElementByContainer.set(container, element);
+    element.replaceWith(container);
+  }
+
+  function savePrompt(prompt) {
+    chrome.runtime.sendMessage({ type: 'SAVE_PROMPT', prompt }, (response) => {
+      if (!response || !response.ok) {
+        console.error('WebsiteToPrompt: failed to save prompt', chrome.runtime.lastError || response);
+      }
     });
   }
 
-  /**
-   * Restore the original HTML from localStorage, removing the Markdown container.
-   */
   function revertElement(container) {
-    const uniqueId = container.getAttribute('data-wtp-id');
-    const originalHTML = localStorage.getItem(uniqueId);
-    if (originalHTML) {
-      container.insertAdjacentHTML('beforebegin', originalHTML);
-      container.remove();
-      localStorage.removeItem(uniqueId);
+    const originalElement = originalElementByContainer.get(container);
+    if (originalElement) {
+      container.replaceWith(originalElement);
     } else {
-      // If we have no localStorage, just remove the container
       container.remove();
     }
   }
@@ -434,38 +427,26 @@
    * Build a (somewhat) unique selector path for the element.
    */
   function getElementSelectorPath(el) {
-    if (!el || el.nodeType !== Node.ELEMENT_NODE) return '';
-    if (el.tagName.toLowerCase() === 'html') return 'html';
-
-    let path = '';
+    const parts = [];
     let current = el;
     while (current && current.nodeType === Node.ELEMENT_NODE) {
       let subSelector = current.tagName.toLowerCase();
 
-      // If it has an ID, use #id
       if (current.id) {
         subSelector += `#${current.id}`;
-      }
-      // Else, if it has classes, use .class1.class2...
-      else if (current.className) {
-        const classes = current.className.trim().split(/\s+/).join('.');
-        if (classes.length) {
-          subSelector += `.${classes}`;
-        }
+      } else if (current.classList.length) {
+        subSelector += '.' + Array.from(current.classList).join('.');
       }
 
-      // :nth-child
-      if (current.parentNode) {
-        const siblings = Array.from(current.parentNode.children);
-        const index = siblings.indexOf(current) + 1;
+      if (current.parentElement) {
+        const index = Array.from(current.parentElement.children).indexOf(current) + 1;
         subSelector += `:nth-child(${index})`;
       }
 
-      path = path ? subSelector + '>' + path : subSelector;
+      parts.unshift(subSelector);
       current = current.parentElement;
     }
-
-    return path;
+    return parts.join('>');
   }
 
   // Create the highlight overlay (semi-transparent rectangle).
@@ -473,14 +454,17 @@
     highlightOverlay = document.createElement('div');
     highlightOverlay.id = 'websiteToPrompt_highlightOverlay';
     highlightOverlay.setAttribute('data-wtp-internal', 'true');
-    highlightOverlay.style.position = 'absolute';
-    highlightOverlay.style.zIndex = '999999';
-    highlightOverlay.style.backgroundColor = 'rgba(135,206,235, 0.3)';
-    highlightOverlay.style.pointerEvents = 'none';
-    highlightOverlay.style.border = '2px solid #00f';
-    highlightOverlay.style.display = 'none';
-    highlightOverlay.style.transition = 'top 0.1s ease-out, left 0.1s ease-out, width 0.1s ease-out, height 0.1s ease-out';
-    document.body.appendChild(highlightOverlay);
+    highlightOverlay.style.cssText = [
+      'position: fixed',
+      'z-index: 2147483646',
+      'background-color: rgba(135, 206, 235, 0.3)',
+      'pointer-events: none',
+      'border: 2px solid #00f',
+      'box-sizing: border-box',
+      'display: none',
+      'transition: top 0.1s ease-out, left 0.1s ease-out, width 0.1s ease-out, height 0.1s ease-out',
+    ].join('; ');
+    document.documentElement.appendChild(highlightOverlay);
   }
 
   function removeOverlayElement() {
@@ -499,7 +483,7 @@
       'bottom: 0',
       'left: 0',
       'right: 0',
-      'z-index: 1000000',
+      'z-index: 2147483647',
       'background: rgba(0, 0, 0, 0.85)',
       'color: #fff',
       "font-family: 'SF Mono', Monaco, Menlo, monospace",
@@ -512,7 +496,7 @@
       'overflow: hidden',
       'text-overflow: ellipsis',
     ].join('; ');
-    document.body.appendChild(breadcrumbBar);
+    document.documentElement.appendChild(breadcrumbBar);
   }
 
   function removeBreadcrumbBar() {
@@ -523,35 +507,52 @@
   }
 
   /**
-   * Inject the basic CSS for the Markdown container and controls.
+   * Inject the CSS for the Markdown container the first time something is captured on this page.
    */
   function injectStyles() {
+    if (stylesInjected) return;
+    stylesInjected = true;
     const style = document.createElement('style');
     style.textContent = `
       .website-to-prompt-container {
+        all: initial;
+        display: block;
         position: relative;
-        font-family: monospace;
-        white-space: pre-wrap;
+        margin: 0.5em 0;
         padding: 1em;
+        border: 1px dashed #87CEEB;
+        border-radius: 6px;
+        background: #fff;
+        color: #1a202c;
       }
       .website-to-prompt-controls {
-        position: absolute;
-        top: 5px;
-        right: 5px;
+        display: flex;
+        justify-content: flex-end;
+        margin-bottom: 0.5em;
+      }
+      .website-to-prompt-markdown {
+        font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+        font-size: 13px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        color: #1a202c;
       }
     `;
-    document.head.appendChild(style);
+    (document.head || document.documentElement).appendChild(style);
   }
 
   function styleButton(btn) {
     btn.style.cssText = `
+      all: initial;
       padding: 4px 8px;
       margin: 0 4px;
       cursor: pointer;
       border: 1px solid #ccc;
       border-radius: 4px;
       background: #fff;
-      color: black !important;
+      color: #000;
+      font: 12px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     `;
   }
 })();
