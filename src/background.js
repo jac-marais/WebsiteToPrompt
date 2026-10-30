@@ -1,82 +1,106 @@
-console.log('WebsiteToPrompt background script running...');
+const CONTENT_SCRIPT_FILES = ['libs/turndown.js', 'content-script.js'];
 
-// Track whether Selection Mode is enabled
-let inspectModeEnabled = false;
-
-// Create the context menus when the extension is installed or updated
 chrome.runtime.onInstalled.addListener(() => {
-  // 1) Selection Mode menu
   chrome.contextMenus.create({
-    id: 'toggleSelectionMode',
-    title: 'Selection Mode',
+    id: 'enableSelectionMode',
+    title: 'Select content',
     contexts: ['all'],
   });
-
-  // 2) New menu item: Open the WebsiteToPrompt Dashboard
   chrome.contextMenus.create({
     id: 'openDashboard',
-    title: 'Open Dashboard',
+    title: 'Open saved prompts',
     contexts: ['all'],
   });
 });
 
-/**
- * Toggle Selection Mode and notify content scripts + popup.
- */
-function toggleSelectionMode(tabId, newState) {
-  inspectModeEnabled = newState;
-
-  // Notify the content script in the current tab (if available)
-  if (tabId === undefined || tabId < 0) {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs && tabs.length > 0) {
-        chrome.tabs.sendMessage(tabs[0].id, {
-          type: 'TOGGLE_SELECTION_MODE',
-          enabled: inspectModeEnabled,
-        });
-      }
-    });
-  } else {
-    chrome.tabs.sendMessage(tabId, {
-      type: 'TOGGLE_SELECTION_MODE',
-      enabled: inspectModeEnabled,
-    });
-  }
-
-  // Notify the popup (if it's open)
-  chrome.runtime.sendMessage({
-    type: 'INSPECT_MODE_STATUS',
-    enabled: inspectModeEnabled,
-  });
+async function getActiveTabId() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab) throw new Error('No active tab.');
+  return tab.id;
 }
 
-// Listen for context menu clicks
+/**
+ * Send a message to the tab's content script, injecting it first if the tab predates the extension.
+ */
+async function sendToContentScript(tabId, message) {
+  try {
+    return await chrome.tabs.sendMessage(tabId, message);
+  } catch (error) {
+    await chrome.scripting.executeScript({ target: { tabId }, files: CONTENT_SCRIPT_FILES });
+    return chrome.tabs.sendMessage(tabId, message);
+  }
+}
+
+async function getSelectionMode(tabId) {
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, { type: 'GET_SELECTION_MODE' });
+    return Boolean(response && response.enabled);
+  } catch (error) {
+    // No content script in the tab means selection mode cannot be on.
+    return false;
+  }
+}
+
+function setSelectionMode(tabId, enabled) {
+  return sendToContentScript(tabId, { type: 'SET_SELECTION_MODE', enabled });
+}
+
+function openDashboard(promptId) {
+  let dashboardUrl = chrome.runtime.getURL('dashboard.html');
+  if (promptId) {
+    dashboardUrl += `?promptId=${encodeURIComponent(promptId)}`;
+  }
+  return chrome.tabs.create({ url: dashboardUrl });
+}
+
+// Every storage write goes through this chain so that saves and deletes from different tabs cannot overwrite each other.
+let storageWriteChain = Promise.resolve();
+
+function updateStoredPrompts(transformPrompts) {
+  const write = storageWriteChain.then(async () => {
+    const { wtpPrompts = [] } = await chrome.storage.local.get('wtpPrompts');
+    await chrome.storage.local.set({ wtpPrompts: transformPrompts(wtpPrompts) });
+  });
+  storageWriteChain = write.catch(() => {});
+  return write;
+}
+
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId === 'toggleSelectionMode') {
-    toggleSelectionMode(tab?.id, true);
+  if (info.menuItemId === 'enableSelectionMode' && tab?.id !== undefined) {
+    setSelectionMode(tab.id, true).catch((error) => console.warn('Cannot enable selection mode:', error));
   } else if (info.menuItemId === 'openDashboard') {
-    // Open the new dashboard page in a new tab
-    chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') });
+    openDashboard();
   }
 });
 
-// Listen for messages from popup or any other script
+const messageHandlers = {
+  async GET_SELECTION_MODE() {
+    return { enabled: await getSelectionMode(await getActiveTabId()) };
+  },
+  async SET_SELECTION_MODE(request) {
+    await setSelectionMode(await getActiveTabId(), request.enabled);
+    return { enabled: request.enabled };
+  },
+  async OPEN_DASHBOARD(request) {
+    await openDashboard(request.promptId);
+    return {};
+  },
+  async SAVE_PROMPT(request) {
+    await updateStoredPrompts((prompts) => [...prompts, request.prompt]);
+    return {};
+  },
+  async DELETE_PROMPTS(request) {
+    const idsToDelete = new Set(request.promptIds);
+    await updateStoredPrompts((prompts) => prompts.filter((prompt) => !idsToDelete.has(prompt.id)));
+    return {};
+  },
+};
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.type === 'TOGGLE_SELECTION_MODE') {
-    toggleSelectionMode(sender.tab?.id, request.enabled);
-    sendResponse({ status: 'ok' });
-  } else if (request.type === 'REQUEST_INSPECT_MODE_STATUS') {
-    // Popup asking for the current Selection Mode status
-    sendResponse({ enabled: inspectModeEnabled });
-  } else if (request.type === 'openDashboard') {
-    let dashboardUrl = chrome.runtime.getURL('dashboard.html');
-    if (request.promptId) {
-      dashboardUrl += `?promptId=${encodeURIComponent(request.promptId)}`;
-    }
-    chrome.tabs.create({ url: dashboardUrl });
-    sendResponse({ status: 'openedDashboard' });
-  } else {
-    // Currently unused/no-op
-    sendResponse({ status: 'no-op' });
-  }
+  const handler = messageHandlers[request.type];
+  if (!handler) return false;
+  handler(request)
+    .then((result) => sendResponse({ ok: true, ...result }))
+    .catch((error) => sendResponse({ ok: false, error: error.message }));
+  return true;
 });

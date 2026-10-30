@@ -1,47 +1,41 @@
-console.log('Popup script loaded.');
-
-// Only keep the Selection Mode toggle; remove old data-gathering logic
 document.addEventListener('DOMContentLoaded', () => {
   const toggleSelectionBtn = document.getElementById('toggleSelectionBtn');
+  const selectionHelp = document.getElementById('selectionHelp');
+  const popupStatus = document.getElementById('popupStatus');
   let isSelectionEnabled = false;
 
-  // Update initial button text to match design
-  toggleSelectionBtn.textContent = 'Enable Selection';
+  function renderToggle() {
+    toggleSelectionBtn.textContent = isSelectionEnabled ? 'Cancel selection' : 'Select content';
+    toggleSelectionBtn.setAttribute('aria-pressed', String(isSelectionEnabled));
+    selectionHelp.textContent = isSelectionEnabled
+      ? 'Move over the page to choose content. Esc cancels.'
+      : 'Hover to highlight. Scroll to widen or narrow. Click to save. Esc cancels.';
+  }
 
-  // Ask the background script for the current Selection Mode state
-  chrome.runtime.sendMessage({ type: 'REQUEST_INSPECT_MODE_STATUS' }, (response) => {
-    if (response && typeof response.enabled === 'boolean') {
-      isSelectionEnabled = response.enabled;
-      toggleSelectionBtn.textContent = isSelectionEnabled ? 'Disable Selection' : 'Enable Selection';
-    }
+  renderToggle();
+  chrome.runtime.sendMessage({ type: 'GET_SELECTION_MODE' }, (response) => {
+    isSelectionEnabled = Boolean(response && response.enabled);
+    renderToggle();
   });
 
-  // Listen for updates from background (e.g., if toggled via context menu)
-  chrome.runtime.onMessage.addListener((message) => {
-    if (message.type === 'INSPECT_MODE_STATUS') {
-      isSelectionEnabled = message.enabled;
-      toggleSelectionBtn.textContent = isSelectionEnabled ? 'Disable Selection' : 'Enable Selection';
-    }
-  });
-
-  // When user clicks the toggle, notify the background script
   toggleSelectionBtn.addEventListener('click', () => {
-    chrome.runtime.sendMessage({
-      type: 'TOGGLE_SELECTION_MODE',
-      enabled: !isSelectionEnabled,
+    const enabled = !isSelectionEnabled;
+    chrome.runtime.sendMessage({ type: 'SET_SELECTION_MODE', enabled }, (response) => {
+      if (!response || !response.ok) {
+        popupStatus.textContent = enabled
+          ? "Couldn't start selection on this page. Try a regular webpage, or reload and try again."
+          : "Couldn't cancel selection. Return to the page and press Esc.";
+        return;
+      }
+      popupStatus.textContent = '';
+      isSelectionEnabled = enabled;
+      renderToggle();
+      // Close the popup so the user can start hovering over the page right away.
+      if (enabled) window.close();
     });
   });
 
-  // NEW: Open Dashboard from popup via background
-  const openDashboardBtn = document.getElementById('openDashboardBtn');
-  openDashboardBtn.addEventListener('click', () => {
-    chrome.runtime.sendMessage({ type: 'openDashboard' });
-  });
-
-  // NEW: GitHub repository link
-  const githubLink = document.getElementById('githubLink');
-  githubLink.addEventListener('click', (e) => {
-    e.preventDefault();
-    chrome.tabs.create({ url: 'https://github.com/hello-nerdo/WebsiteToPrompt' });
+  document.getElementById('openDashboardBtn').addEventListener('click', () => {
+    chrome.runtime.sendMessage({ type: 'OPEN_DASHBOARD' });
   });
 });

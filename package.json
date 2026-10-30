@@ -1,19 +1,13 @@
 {
   "name": "websitetoprompt",
-  "version": "0.0.1",
-  "description": "This Chrome extension allows you to select webpage elements and convert them into Markdown. Your selections are automatically saved as prompts, which can be managed, exported, or deleted through the Prompt Management Dashboard.",
-  "main": "webpack.config.js",
+  "version": "0.1.0",
+  "description": "This Chrome extension allows you to select webpage elements and convert them into Markdown. Your selections are automatically saved as prompts, which can be copied, searched, or deleted on the Saved prompts page.",
+  "private": true,
   "scripts": {
-    "pack": "npx webpack --config webpack.config.js"
+    "build": "rm -rf dist && cp -R src dist",
+    "test": "docker run --rm -v \"$PWD\":/repo:ro -w /repo mcr.microsoft.com/playwright:v1.59.1-noble bash -c 'npm i --silent --no-save --prefix /tmp/pw playwright@1.59.1 && NODE_PATH=/tmp/pw/node_modules node tests/e2e.js'",
+    "pack": "npm run build && rm -f WebsiteToPrompt.zip && cd dist && zip -qr ../WebsiteToPrompt.zip ."
   },
-  "author": "https://github.com/hello-nerdo",
-  "license": "MIT",
-  "devDependencies": {
-    "copy-webpack-plugin": "^12.0.2",
-    "dotenv": "^16.4.7",
-    "webpack": "^5.97.1",
-    "webpack-cli": "^6.0.1",
-    "webpack-obfuscator": "^3.5.1",
-    "zip-webpack-plugin": "^4.0.3"
-  }
+  "author": "https://github.com/jac-marais",
+  "license": "MIT"
 }
