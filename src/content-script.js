@@ -15,6 +15,7 @@
 
   // Original elements are kept so Restore puts back the live node with its event listeners.
   const originalElementByContainer = new WeakMap();
+  const chosenImageSrc = new WeakMap();
 
   const SKIP_TAGS = new Set(['HTML', 'HEAD', 'SCRIPT', 'STYLE', 'LINK', 'META', 'NOSCRIPT', 'BR', 'BODY']);
 
@@ -374,15 +375,40 @@
   /**
    * Copy the element into an inert document, so the copy runs no page code and fetches nothing.
    * Earlier captures are swapped back for their original elements, so a wider capture converts the real content.
+   * An explicit stack instead of recursion, because pages can nest thousands of levels deep.
    */
-  function snapshotForConversion(node, inertDocument) {
-    const source = originalElementByContainer.get(node) || node;
-    const copy = inertDocument.importNode(source, false);
-    // srcset images only know their chosen URL on the live node.
-    if (source.nodeName === 'IMG' && source.currentSrc) copy.setAttribute('src', source.currentSrc);
-    source.childNodes.forEach((child) => copy.appendChild(snapshotForConversion(child, inertDocument)));
-    return copy;
+  function snapshotForConversion(root, inertDocument) {
+    const copyNode = (source) => {
+      const copy = inertDocument.importNode(source, false);
+      if (source.nodeName === 'IMG') {
+        // A detached image forgets which srcset or <picture> source it chose, so remember it from the first capture.
+        const chosenSrc = chosenImageSrc.get(source) || source.currentSrc;
+        if (chosenSrc) {
+          chosenImageSrc.set(source, chosenSrc);
+          copy.setAttribute('src', chosenSrc);
+        }
+      }
+      return copy;
+    };
+    const resolve = (node) => originalElementByContainer.get(node) || node;
+
+    const rootSource = resolve(root);
+    const rootCopy = copyNode(rootSource);
+    const pending = [[rootSource, rootCopy]];
+    while (pending.length > 0) {
+      const [source, copy] = pending.pop();
+      const children = source.nodeName === 'TEMPLATE' ? source.content.childNodes : source.childNodes;
+      const target = copy.nodeName === 'TEMPLATE' ? copy.content : copy;
+      children.forEach((child) => {
+        const childSource = resolve(child);
+        const childCopy = copyNode(childSource);
+        target.appendChild(childCopy);
+        pending.push([childSource, childCopy]);
+      });
+    }
+    return rootCopy;
   }
+
 
 
   function handleRuntimeMessage(request, sender, sendResponse) {
@@ -403,6 +429,11 @@
   chrome.runtime.onMessage.addListener(handleRuntimeMessage);
   document.addEventListener('website-to-prompt:dispose', () => {
     disableSelectionMode();
+    // Only this copy knows the originals behind its cards, so it puts them back before the new copy takes over.
+    // Restoring an outer card can bring back inner cards, so repeat until none are left.
+    const findOwnCards = () => [...document.querySelectorAll('.website-to-prompt-container')]
+      .filter((container) => originalElementByContainer.has(container));
+    for (let cards = findOwnCards(); cards.length > 0; cards = findOwnCards()) cards.forEach(restoreElement);
     try {
       chrome.runtime.onMessage.removeListener(handleRuntimeMessage);
     } catch (error) {

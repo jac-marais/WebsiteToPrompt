@@ -27,6 +27,7 @@ const CONVERT_PAGE = `<!doctype html><html><body>
 <script>window.customElementConstructions = 0; customElements.define('x-counter', class extends HTMLElement { constructor() { super(); window.customElementConstructions++; } });</script>
 <div id="convert" style="width:500px;padding:20px">
 <x-counter>Custom</x-counter>
+<template><p>Template body</p></template>
 <p><a href="java&#9;script:alert(1)">tabbed</a> <img src="da&#9;ta:image/png;base64,AAAA" alt="data *alt*"> <img src="/x.png" alt="closing ] bracket"> <img srcset="/selected.png 1x" alt="Chosen"></p>
 <ul><li>One</li><li>Two<ul><li>Nested</li></ul></li></ul>
 <ol start="3"><li>Three</li><li>Four</li></ol>
@@ -38,6 +39,7 @@ last</code></pre>
 <table><tr><td colspan="2" onclick="window.cellClicked = true"><a href="/rel">rel</a><button>Buy</button><input value="1"><script>window.tableScriptRan = true</script><img src="data:image/png;base64,AA" srcset="data:image/png;base64,AAAA 1x, /relative.png 2x" onerror="window.liveImageFailed = true"></td></tr></table>
 </div>
 <pre id="codeBlock" style="width:300px;padding:8px"><code>const <span id="token">value</span> = 1;</code></pre>
+<div id="picGrandparent" style="width:300px;padding:8px"><div id="picParent" style="padding:8px"><picture><source srcset="/chosen.png" media="(min-width: 1px)"><img id="pic" src="/fallback.png" alt="Pic" width="40" height="40"></picture></div></div>
 <p id="failTarget" style="width:300px">Fail target</p>
 <section id="nested" style="width:500px;padding:20px"><ul><li><p id="nestedItem">Item</p></li></ul><blockquote><p id="nestedQuote">Quoted</p></blockquote></section></body></html>`;
 const CONVERT_EXPECTED = [
@@ -246,6 +248,7 @@ const storedPrompts = (sw) => sw.evaluate(async () => (await chrome.storage.loca
   await convertTab.mouse.click(convertBox.x + 5, convertBox.y + 5);
   await convertTab.locator('.wtp-card-status:text("✓ Saved")').waitFor();
   const converted = (await storedPrompts(sw)).at(-1).generatedPrompt;
+  assert.ok((await storedPrompts(sw)).at(-1).elementContent.includes('<template><p>Template body</p></template>'), 'template body kept in elementContent');
   assert.strictEqual(converted, CONVERT_EXPECTED, 'conversion edge cases: ' + JSON.stringify(converted));
   assert.strictEqual(await convertTab.evaluate(() => window.customElementConstructions), 1, 'conversion does not rerun page code');
 
@@ -275,6 +278,18 @@ const storedPrompts = (sw) => sw.evaluate(async () => (await chrome.storage.loca
   assert.strictEqual(codePrompt.generatedPrompt, '```\nconst value = 1;\n```', 'code recapture: ' + JSON.stringify(codePrompt.generatedPrompt));
   assert.ok(codePrompt.elementContent.includes('<span id="token">value</span>'), 'elementContent holds the original token');
 
+  // 18. Wider captures keep the image source the browser chose, even after the image left the page.
+  await capture(convertTab, sw, '#pic');
+  for (const wrapperId of ['#picParent', '#picGrandparent']) {
+    const before = (await storedPrompts(sw)).length;
+    await sw.evaluate(() => messageHandlers.SET_SELECTION_MODE({ enabled: true }));
+    const wrapperBox = await convertTab.locator(wrapperId).boundingBox();
+    await convertTab.mouse.move(wrapperBox.x + 2, wrapperBox.y + 2);
+    await convertTab.mouse.click(wrapperBox.x + 2, wrapperBox.y + 2);
+    for (let i = 0; i < 50 && (await storedPrompts(sw)).length === before; i++) await convertTab.waitForTimeout(100);
+    assert.strictEqual((await storedPrompts(sw)).at(-1).generatedPrompt, '![Pic](http://test.local/chosen.png)', 'chosen image kept for ' + wrapperId);
+  }
+
   // 16. A failed save says so and keeps the Open button off, because the prompt does not exist.
   await sw.evaluate(() => {
     self.realSavePrompt = messageHandlers.SAVE_PROMPT;
@@ -290,6 +305,10 @@ const storedPrompts = (sw) => sw.evaluate(async () => (await chrome.storage.loca
   await sw.evaluate(() => messageHandlers.SET_SELECTION_MODE({ enabled: true }));
   await convertTab.evaluate(() => document.dispatchEvent(new Event('website-to-prompt:dispose')));
   assert.strictEqual(await convertTab.locator('#websiteToPrompt_highlightOverlay').count(), 0, 'dispose removes the picker');
+  // The old copy hands the page back with every original restored, including cards nested inside cards.
+  assert.strictEqual(await convertTab.locator('.website-to-prompt-container').count(), 0, 'dispose restores all cards');
+  assert.strictEqual(await convertTab.locator('#pic').count(), 1, 'nested original restored');
+  assert.strictEqual(await convertTab.locator('#token').textContent(), 'value', 'code token restored');
   assert.strictEqual((await sw.evaluate(() => messageHandlers.GET_SELECTION_MODE())).enabled, false, 'disposed copy stops answering');
   await convertTab.close();
 
