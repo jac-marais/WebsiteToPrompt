@@ -21,7 +21,37 @@ const cardPage = (css, wrapInner) => `<!doctype html><html><head><meta charset="
 <p id="rtl" dir="rtl" style="width:400px">שלום עולם</p>
 <dialog id="modal"><p id="dialogText">Dialog text</p></dialog>
 </body></html>`;
-const PAGES = { '/plain.html': cardPage('', false), '/hostile.html': cardPage(HOSTILE_CSS, true) };
+const CONVERT_PAGE = `<!doctype html><html><body>
+<div id="convert" style="width:500px;padding:20px">
+<p><a href="java&#9;script:alert(1)">tabbed</a> <img src="da&#9;ta:image/png;base64,AAAA" alt="data *alt*"> <img src="/x.png" alt="closing ] bracket"> <img srcset="/selected.png 1x" alt="Chosen"></p>
+<ul><li>One</li><li>Two<ul><li>Nested</li></ul></li></ul>
+<ol start="3"><li>Three</li><li>Four</li></ol>
+<pre><code>first
+
+
+last</code></pre>
+<table><tr><td colspan="2"><a href="/rel">rel</a><script>window.tableScriptRan = true</script><img src="data:image/png;base64,AA"></td></tr></table>
+</div></body></html>`;
+const CONVERT_EXPECTED = [
+  'tabbed data \\*alt\\* ![closing \\] bracket](http://test.local/x.png) ![Chosen](http://test.local/selected.png)',
+  '',
+  '- One',
+  '- Two',
+  '  - Nested',
+  '',
+  '3. Three',
+  '4. Four',
+  '',
+  '```',
+  'first',
+  '',
+  '',
+  'last',
+  '```',
+  '',
+  '<table><tbody><tr><td colspan="2"><a href="http://test.local/rel">rel</a><img></td></tr></tbody></table>',
+].join('\n');
+const PAGES = { '/plain.html': cardPage('', false), '/hostile.html': cardPage(HOSTILE_CSS, true), '/convert.html': CONVERT_PAGE };
 
 async function center(page, selector) {
   const box = await page.locator(selector).boundingBox();
@@ -97,12 +127,13 @@ const storedPrompts = (sw) => sw.evaluate(async () => (await chrome.storage.loca
   await page.locator('#inc').click();
   assert.strictEqual(await page.locator('#count').textContent(), '1', 'listener survives restore');
 
-  // 5. Clicking an SVG shape no longer crashes and still ends selection mode.
+  // 5. Clicking an SVG shape captures the surrounding HTML element, because a card cannot render inside SVG.
   await capture(page, sw, '#iconRect');
   assert.strictEqual((await sw.evaluate(() => messageHandlers.GET_SELECTION_MODE())).enabled, false, 'svg click ends selection mode');
   prompts = await storedPrompts(sw);
   assert.strictEqual(prompts.length, 3, 'svg capture saved');
-  assert.ok(prompts[2].elementPath.includes('rect#iconRect'), 'svg path: ' + prompts[2].elementPath);
+  assert.ok(prompts[2].elementPath.endsWith('div#iconBox:nth-child(5)'), 'svg path: ' + prompts[2].elementPath);
+  assert.strictEqual(prompts[2].generatedPrompt, 'icon text', 'svg capture markdown');
 
   // 6. Capturing a parent of an earlier capture leaves out its buttons.
   await capture(page, sw, '#title', 1);
@@ -186,6 +217,26 @@ const storedPrompts = (sw) => sw.evaluate(async () => (await chrome.storage.loca
   await popup.waitForFunction(() => document.getElementById('toggleSelectionBtn').textContent === 'Cancel selection');
   await page.keyboard.press('Escape');
   await popup.close();
+
+  // 14. Conversion edge cases from review: parsed schemes, escaped alt, list markers, code blank lines, table cleanup, srcset.
+  const convertTab = await context.newPage();
+  convertTab.on('pageerror', (e) => errors.push('convert: ' + e.message));
+  await convertTab.goto('http://test.local/convert.html');
+  await convertTab.bringToFront();
+  await sw.evaluate(() => messageHandlers.SET_SELECTION_MODE({ enabled: true }));
+  const convertBox = await convertTab.locator('#convert').boundingBox();
+  await convertTab.mouse.move(convertBox.x + 4, convertBox.y + 4);
+  await convertTab.mouse.click(convertBox.x + 5, convertBox.y + 5);
+  await convertTab.locator('.wtp-card-status:text("✓ Saved")').waitFor();
+  const converted = (await storedPrompts(sw)).at(-1).generatedPrompt;
+  assert.strictEqual(converted, CONVERT_EXPECTED, 'conversion edge cases: ' + JSON.stringify(converted));
+
+  // 15. A newer injected copy disposes the older one, so stale listeners cannot keep intercepting clicks.
+  await sw.evaluate(() => messageHandlers.SET_SELECTION_MODE({ enabled: true }));
+  await convertTab.evaluate(() => document.dispatchEvent(new Event('website-to-prompt:dispose')));
+  assert.strictEqual(await convertTab.locator('#websiteToPrompt_highlightOverlay').count(), 0, 'dispose removes the picker');
+  assert.strictEqual((await sw.evaluate(() => messageHandlers.GET_SELECTION_MODE())).enabled, false, 'disposed copy stops answering');
+  await convertTab.close();
 
   // 13. The capture card and picker work the same on a plain page and on hostile CSS with a modal dialog.
   // The plain page is https, which has the Clipboard API; http pages copy through the fallback.

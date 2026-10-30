@@ -210,6 +210,24 @@
 
   turndownService.remove(['script', 'style', 'noscript', 'template']);
 
+  // Turndown pads markers to four columns ("-   item"); use one space and indent continuation lines to match.
+  turndownService.addRule('listItem', {
+    filter: 'li',
+    replacement: function (content, node, options) {
+      var prefix = options.bulletListMarker + ' ';
+      var parent = node.parentNode;
+      if (parent.nodeName === 'OL') {
+        var start = Number(parent.getAttribute('start')) || 1;
+        prefix = start + Array.prototype.indexOf.call(parent.children, node) + '. ';
+      }
+      content = content
+        .replace(/^\n+/, '')
+        .replace(/\n+$/, '\n')
+        .replace(/\n/gm, '\n' + ' '.repeat(prefix.length));
+      return prefix + content + (node.nextSibling && !/\n$/.test(content) ? '\n' : '');
+    }
+  });
+
   // --- Table conversion rules ---
 
   function isComplexTable(tableEl) {
@@ -228,6 +246,26 @@
     content = content.replace(/\n/g, ' ').trim();
     content = content.replace(/\|/g, '\\|');
     return content || ' ';
+  }
+
+  // Complex tables stay as HTML, so they need the same cleanup the Markdown rules give everything else.
+  function sanitizeTableHtml(tableEl) {
+    var clean = tableEl.cloneNode(true);
+    clean.querySelectorAll('script, style, noscript, template').forEach(function (node) { node.remove(); });
+    clean.querySelectorAll('[data-wtp-markdown]').forEach(function (host) {
+      host.replaceWith(host.getAttribute('data-wtp-markdown'));
+    });
+    clean.querySelectorAll('a[href], img[src]').forEach(function (node) {
+      var attribute = node.nodeName === 'A' ? 'href' : 'src';
+      var url = parseUrl(node.getAttribute(attribute));
+      var blocked = !url || url.protocol === 'javascript:' || (attribute === 'src' && url.protocol === 'data:');
+      if (blocked) {
+        node.removeAttribute(attribute);
+      } else {
+        node.setAttribute(attribute, url.href);
+      }
+    });
+    return clean.outerHTML;
   }
 
   // Suppress child elements — the table rule walks the DOM directly
@@ -250,7 +288,7 @@
       var tableEl = node.element || node;
 
       if (isComplexTable(tableEl)) {
-        return '\n\n' + tableEl.outerHTML + '\n\n';
+        return '\n\n' + sanitizeTableHtml(tableEl) + '\n\n';
       }
 
       var rows = Array.from(tableEl.querySelectorAll('tr'));
@@ -292,12 +330,17 @@
       .join(' ');
   }
 
-  function toAbsoluteUrl(href) {
+  // Parse before checking the scheme, because the URL parser strips tabs and newlines (java&#9;script:).
+  function parseUrl(rawUrl) {
     try {
-      return new URL(href, document.baseURI).href;
+      return new URL(rawUrl.trim(), document.baseURI);
     } catch (error) {
-      return href;
+      return null;
     }
+  }
+
+  function markdownUrl(url) {
+    return url.href.replace(/([()])/g, '\\$1');
   }
 
   turndownService.addRule('inlineLink', {
@@ -306,33 +349,39 @@
     },
     replacement: function (content, node) {
       var text = flattenLinkText(content);
-      var href = node.getAttribute('href').trim();
       if (!text) return '';
-      if (/^javascript:/i.test(href)) return text;
-      var url = toAbsoluteUrl(href).replace(/([()])/g, '\\$1');
+      var url = parseUrl(node.getAttribute('href'));
+      if (!url || url.protocol === 'javascript:') return text;
       var title = (node.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
       var titlePart = title ? ' "' + title.replace(/"/g, '\\"') + '"' : '';
-      return '[' + text + '](' + url + titlePart + ')';
+      return '[' + text + '](' + markdownUrl(url) + titlePart + ')';
     }
   });
 
   turndownService.addRule('image', {
     filter: 'img',
     replacement: function (content, node) {
-      var src = (node.getAttribute('src') || '').trim();
-      var alt = (node.getAttribute('alt') || '').replace(/\s+/g, ' ').trim();
+      var url = parseUrl(node.getAttribute('src') || '');
+      var alt = turndownService.escape((node.getAttribute('alt') || '').replace(/\s+/g, ' ').trim());
       // Inline data URIs can be megabytes of base64, which would swamp the prompt.
-      if (!src || /^data:/i.test(src)) return alt;
-      return '![' + alt + '](' + toAbsoluteUrl(src).replace(/([()])/g, '\\$1') + ')';
+      if (!url || !node.getAttribute('src') || url.protocol === 'data:' || url.protocol === 'javascript:') return alt;
+      return '![' + alt + '](' + markdownUrl(url) + ')';
     }
   });
 
   function htmlToMarkdown(element) {
+    // srcset images only know their chosen URL on the live node, so copy it onto the clone.
+    const clone = element.cloneNode(true);
+    const liveImages = element.matches('img') ? [element] : element.querySelectorAll('img');
+    const clonedImages = clone.matches('img') ? [clone] : clone.querySelectorAll('img');
+    liveImages.forEach((image, index) => {
+      if (image.currentSrc) clonedImages[index].setAttribute('src', image.currentSrc);
+    });
     // The HTML string keeps the element's own tag and parses in an inert document.
-    return turndownService.turndown(element.outerHTML).replace(/\n{3,}/g, '\n\n').trim();
+    return turndownService.turndown(clone.outerHTML).trim();
   }
 
-  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  function handleRuntimeMessage(request, sender, sendResponse) {
     if (request.type === 'GET_SELECTION_MODE') {
       sendResponse({ enabled: selectionMode });
     } else if (request.type === 'SET_SELECTION_MODE') {
@@ -343,7 +392,19 @@
       }
       sendResponse({ enabled: selectionMode });
     }
-  });
+  }
+
+  // After an extension reload the background injects a fresh copy, so the stale copy must let go of the page.
+  document.dispatchEvent(new Event('website-to-prompt:dispose'));
+  chrome.runtime.onMessage.addListener(handleRuntimeMessage);
+  document.addEventListener('website-to-prompt:dispose', () => {
+    disableSelectionMode();
+    try {
+      chrome.runtime.onMessage.removeListener(handleRuntimeMessage);
+    } catch (error) {
+      // The old runtime is already gone after a reload, which is the case being cleaned up.
+    }
+  }, { once: true });
 
   // --- Element stack helpers ---
 
@@ -356,6 +417,8 @@
     return rawElements.filter(function (el) {
       if (isExtensionElement(el)) return false;
       if (SKIP_TAGS.has(el.tagName)) return false;
+      // An HTML card cannot render inside SVG, so the picker skips to the surrounding HTML element.
+      if (el instanceof SVGElement) return false;
       var rect = el.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) return false;
       return true;
